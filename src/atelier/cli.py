@@ -115,6 +115,10 @@ def _add_screenshot_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--tab", choices=("chat", "refs", "readme"), help=argparse.SUPPRESS)
     parser.add_argument("--frame", choices=("model", "figure"), help=argparse.SUPPRESS)
     parser.add_argument("--window-size", default="1600x1000", help=argparse.SUPPRESS)
+    parser.add_argument("--revision", type=int, help=argparse.SUPPRESS)
+    parser.add_argument("--compare", choices=("renders", "models"), help=argparse.SUPPRESS)
+    parser.add_argument("--compare-base", type=int, help=argparse.SUPPRESS)
+    parser.add_argument("--compare-view", help=argparse.SUPPRESS)
 
 
 def _run_gui(arguments: argparse.Namespace) -> int:
@@ -144,6 +148,10 @@ def _run_gui(arguments: argparse.Namespace) -> int:
         source=arguments.source,
         export=arguments.export,
         render=arguments.render,
+        revision=arguments.revision,
+        compare=arguments.compare,
+        compare_base=arguments.compare_base,
+        compare_view=arguments.compare_view,
         view_options=view_options,
         window_size=(int(width), int(height)),
     )

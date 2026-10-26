@@ -317,6 +317,23 @@ class TestStandardRenders:
         assert revisions.standard_renders(second)[0].state is RenderState.DONE
         assert len(fake_blender.rendered) == 1
 
+    def test_a_restore_shows_the_restored_revisions_renders_at_once(
+        self,
+        revisions: Revisions,
+        catalog: Catalog,
+        fake_blender: FakeBlender,
+    ) -> None:
+        first = revisions.record(CARBINE, RevisionTrigger.CHANGE)
+        assert first is not None
+        revisions.render_standard(first.id, CARBINE_EXPORT)
+        (catalog.project.root / CARBINE_EXPORT).write_bytes(b"mesh v2")
+        revisions.record(CARBINE, RevisionTrigger.CHANGE)
+
+        restored = revisions.restore(CARBINE, first.id).restored
+
+        assert revisions.standard_renders(restored)[0].state is RenderState.DONE
+        assert len(fake_blender.rendered) == 1
+
     def test_a_failed_render_is_recorded_and_not_retried(
         self,
         revisions: Revisions,

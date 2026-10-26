@@ -470,6 +470,18 @@ class Studio(QObject):
         """The selected source's exports, as the export picker lists them."""
         return [row.path for row in self._export_rows.rows if isinstance(row, ExportRow)]
 
+    def revision_id_by_number(self, number: int) -> int:
+        """The id of the selected source's revision `r<number>`.
+
+        Raises:
+            KeyError: the source has no such revision.
+        """
+        revisions = self._history.revisions if self._history else ()
+        revision = next((item for item in revisions if item.number == number), None)
+        if revision is None:
+            raise KeyError(f"{self._selected_source} has no revision r{number}")
+        return revision.id
+
     @property
     def render_paths(self) -> list[str]:
         """The selected source's renders, in gallery order."""

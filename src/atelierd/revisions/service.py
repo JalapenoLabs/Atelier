@@ -189,10 +189,11 @@ class Revisions:
     # ####################### #
 
     def exports_to_render(self, revision: Revision) -> list[str]:
-        """Return the exports a new revision needs rendered, after linking in every set it can reuse.
+        """Return the exports a new revision needs rendered.
 
-        An export with the same bytes in another revision reuses that revision's set. Of the rest, only exports that
-        changed since the previous revision are rendered; a baseline's exports wait until someone asks for them.
+        Recording already shared every set another revision had for the same bytes. Of the exports still without
+        one, only those that changed since the previous revision are rendered; a baseline's exports wait until
+        someone asks for them.
         """
         with RevisionStore(self.project.database_path) as store:
             previous = next(
@@ -203,7 +204,7 @@ class Revisions:
 
         to_render: list[str] = []
         for render in self.standard_renders(revision):
-            if render.state is not RenderState.MISSING or self._reuse_render_set(revision, render.export):
+            if render.state is not RenderState.MISSING:
                 continue
             is_changed = previous_manifest.get(render.export) != render.export_sha256
             if revision.trigger is not RevisionTrigger.BASELINE and is_changed:
@@ -383,6 +384,10 @@ class Revisions:
 
         if revision:
             logger.info(f"[Revisions] Recorded r{revision.number} of {source_path} ({trigger.value})")
+            # An export whose bytes another revision has already rendered (unchanged, or brought back by a restore)
+            # shows that set at once.
+            for export in revision.exports:
+                self._reuse_render_set(revision, export.path)
         return revision
 
     def _snapshot_file(self, store: RevisionStore, path: str, kind: FileKind) -> RevisionFile | None:
