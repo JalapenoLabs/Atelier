@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from atelierd.catalog import Catalog, SourceStatus
+from atelierd.catalog import CameraBookmark, Catalog, SourceStatus
 from atelierd.project import open_project
 
 CARBINE = "SourceArt/Weapons/Carbine/Carbine.blend"
@@ -31,7 +31,7 @@ class TestScan:
         database_path = catalog.project.root / ".atelier" / "state.db"
         with sqlite3.connect(database_path) as connection:
             assert connection.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
-            assert connection.execute("PRAGMA user_version").fetchone()[0] == 1
+            assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
 
     def test_stored_catalog_matches_the_scan(self, catalog: Catalog) -> None:
         result = catalog.scan()
@@ -107,3 +107,35 @@ class TestStateLocation:
         catalog = Catalog(open_project(project_root, config_path=outside_config, state_dir=tmp_path / "state"))
         paths = [source.path for source in catalog.scan().sources]
         assert paths == ["SourceArt/Ship/DeckKit.blend", "SourceArt/Ship/Hull.blend"]
+
+
+class TestCameraBookmarks:
+    def test_saved_bookmarks_are_listed_by_name(self, catalog: Catalog) -> None:
+        catalog.scan()
+        side = CameraBookmark(name="side", target_cm=(0, 20, 10), yaw_degrees=90, pitch_degrees=0, distance_cm=150)
+        hero = CameraBookmark(name="hero", target_cm=(1, 2, 3), yaw_degrees=225, pitch_degrees=-22, distance_cm=300)
+        catalog.save_bookmark(CARBINE, side)
+        catalog.save_bookmark(CARBINE, hero)
+        assert catalog.list_bookmarks(CARBINE) == [hero, side]
+
+    def test_saving_under_an_existing_name_replaces_it(self, catalog: Catalog) -> None:
+        catalog.scan()
+        first = CameraBookmark(name="hero", target_cm=(0, 0, 0), yaw_degrees=0, pitch_degrees=0, distance_cm=100)
+        catalog.save_bookmark(CARBINE, first)
+        catalog.save_bookmark(CARBINE, first.model_copy(update={"distance_cm": 250.0}))
+        assert [bookmark.distance_cm for bookmark in catalog.list_bookmarks(CARBINE)] == [250.0]
+
+    def test_deleting_removes_only_that_bookmark(self, catalog: Catalog) -> None:
+        catalog.scan()
+        for name in ("a", "b"):
+            bookmark = CameraBookmark(name=name, target_cm=(0, 0, 0), yaw_degrees=0, pitch_degrees=0, distance_cm=1)
+            catalog.save_bookmark(CARBINE, bookmark)
+        catalog.delete_bookmark(CARBINE, "a")
+        assert [bookmark.name for bookmark in catalog.list_bookmarks(CARBINE)] == ["b"]
+        with pytest.raises(KeyError):
+            catalog.delete_bookmark(CARBINE, "a")
+
+    def test_bookmarks_need_a_present_source(self, catalog: Catalog) -> None:
+        catalog.scan()
+        with pytest.raises(KeyError):
+            catalog.list_bookmarks("SourceArt/Nope.blend")

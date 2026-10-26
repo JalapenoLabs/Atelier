@@ -53,9 +53,12 @@ def build_source_rows(
     collapsed: frozenset[str] = frozenset(),
 ) -> list[SourceRow]:
     """Return the rows of the tree, in display order, for the sources that pass the filter."""
+    all_sources = list(sources)
     needle = filter_text.strip().lower()
     matching_sources = [
-        source for source in sources if needle in source.path.lower() and (status is None or source.status is status)
+        source
+        for source in all_sources
+        if needle in source.path.lower() and (status is None or source.status is status)
     ]
     if not matching_sources:
         logger.debug(f"[Tree] No source matches filter '{filter_text}' and status {status}")
@@ -69,14 +72,27 @@ def build_source_rows(
             folder = folder.folders.setdefault(part, _Folder(path=folder_path, name=part))
         folder.sources.append(source)
 
-    # Skip a top folder that everything shares, such as `SourceArt`.
-    while len(root.folders) == 1 and not root.sources:
-        root = next(iter(root.folders.values()))
+    # Skip the top folders every source shares, such as `SourceArt`. They are taken from all the sources rather
+    # than the matches, so the tree keeps its shape while it is filtered.
+    for part in _shared_top_folders(all_sources):
+        root = root.folders[part]
 
     rows: list[SourceRow] = []
     effective_collapsed = frozenset() if needle else collapsed
     _append_folder_contents(rows, root, depth=0, collapsed=effective_collapsed)
     return rows
+
+
+def _shared_top_folders(sources: list[Source]) -> list[str]:
+    """Return the leading folders that every source sits under, stopping above any folder that holds a source."""
+    folder_parts = [PurePosixPath(source.path).parent.parts for source in sources]
+    shared: list[str] = []
+    for index, part in enumerate(folder_parts[0]):
+        is_shared = all(len(parts) > index + 1 and parts[index] == part for parts in folder_parts)
+        if not is_shared:
+            break
+        shared.append(part)
+    return shared
 
 
 def _append_folder_contents(rows: list[SourceRow], folder: _Folder, depth: int, collapsed: frozenset[str]) -> None:
