@@ -51,6 +51,21 @@ class Reference(BaseModel):
     tag: str = Field(description="Name of the folder the image sits in, such as `Creatures` or `Palette`.")
 
 
+class CameraBookmark(BaseModel):
+    """A named viewpoint on a source in the viewer, an orbit around a target, in Unreal's frame (Z up, cm)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    name: str
+    target_cm: tuple[float, float, float] = Field(description="The point the camera orbits and looks at.")
+    yaw_degrees: float = Field(
+        description="Turn about the vertical, counterclockwise seen from above: at 0 the camera is on the target's "
+        "+Y side, at 90 on its +X side.",
+    )
+    pitch_degrees: float = Field(description="Tilt; negative looks down on the target from above.")
+    distance_cm: float = Field(description="Distance from the camera to the target.")
+
+
 class CatalogChange(BaseModel):
     """What one scan changed relative to the catalog stored before it."""
 

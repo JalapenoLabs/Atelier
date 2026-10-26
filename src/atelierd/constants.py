@@ -63,3 +63,21 @@ REGISTRY_FILE_NAME = "projects.toml"
 WATCH_SETTLE_MS = 1500
 # Upper bound on how long a continuous stream of changes is grouped before the catalog rescans anyway.
 WATCH_MAX_BATCH_MS = 30_000
+
+# ========================================================================================
+# Exports and their converted meshes
+# ========================================================================================
+
+# Unreal's convention for collision hulls exported beside a mesh. The viewer hides them unless asked.
+COLLISION_PREFIX = "UCX_"
+
+# `<state>/cache/` holds every export converted to `.glb` with its stats, named by the FBX's sha256.
+CACHE_DIR_NAME = "cache"
+
+# The Blender command run headless; `ATELIER_BLENDER` overrides it with a path or another command name.
+BLENDER_COMMAND = "blender"
+BLENDER_COMMAND_ENV = "ATELIER_BLENDER"
+# Headless Blender runs at this niceness, so a conversion never competes with the window or an open editor.
+BLENDER_NICENESS = 10
+# A conversion still running after this long is treated as hung and killed.
+BLENDER_TIMEOUT_S = 300

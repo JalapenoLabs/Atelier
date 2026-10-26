@@ -1,6 +1,7 @@
 """The catalog: a project's sources, their exports and renders, its references, and their review statuses."""
 
 from atelierd.catalog.models import (
+    CameraBookmark,
     CatalogChange,
     DiscoveredSource,
     Reference,
@@ -12,6 +13,7 @@ from atelierd.catalog.service import Catalog
 from atelierd.catalog.watcher import CatalogEvent, CatalogWatcher
 
 __all__ = [
+    "CameraBookmark",
     "Catalog",
     "CatalogChange",
     "CatalogEvent",
