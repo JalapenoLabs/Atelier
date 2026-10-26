@@ -1,5 +1,5 @@
 // The viewport's display controls: lighting, wireframe, collision, scale figure, grid, framing, the load path,
-// and the source's camera bookmarks.
+// the source's camera bookmarks, and freezing a frame for markup.
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
@@ -95,6 +95,20 @@ Rectangle {
             id: viewsButton
             text: "Views ▾"
             onClicked: viewsPopup.open()
+        }
+
+        ToolSeparator {
+            visible: markUpButton.visible
+        }
+
+        ToolButton {
+            id: markUpButton
+            text: "Mark up"
+            visible: toolbar.viewport.isPrimary
+            enabled: toolbar.viewport.hasModel
+            onClicked: toolbar.viewport.markUpFrame()
+            ToolTip.visible: hovered
+            ToolTip.text: "Freeze this frame and draw on it, to send to the source's worker"
         }
     }
 

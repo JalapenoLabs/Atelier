@@ -1,5 +1,5 @@
-// The centre pane: the selected source's header, the stage (3D viewport, a render full size, or compare) and,
-// under it, the render gallery and the revision filmstrip.
+// The centre pane: the selected source's header, the stage (3D viewport, a render full size, compare, or the
+// markup editor) and, under it, the render gallery and the revision filmstrip.
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
@@ -102,7 +102,8 @@ Rectangle {
             StackLayout {
                 SplitView.fillHeight: true
                 SplitView.minimumHeight: 240
-                currentIndex: studio.isComparing ? 3
+                currentIndex: studio.markupEditor.isOpen ? 4
+                              : studio.isComparing ? 3
                               : studio.stageImage !== "" ? 1
                               : studio.selectedExport !== "" ? 0 : 2
 
@@ -127,6 +128,9 @@ Rectangle {
 
                 ComparePage {
                     primaryViewport: primaryViewport
+                }
+
+                MarkupEditor {
                 }
             }
 

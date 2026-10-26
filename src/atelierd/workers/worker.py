@@ -117,6 +117,7 @@ class Worker:
 
         with WorkerStore(project.database_path) as store:
             sessions = store.list_sessions(source_path)
+            self._pinned_references = tuple(store.pinned_references(source_path))
         self._session_id: str | None = sessions[0].session_id if sessions else None
         # Whether Claude Code has stored the session, so the next process resumes it rather than opening it.
         self._is_session_stored = bool(sessions and sessions[0].last_turn_at)
@@ -137,17 +138,17 @@ class Worker:
                 session_id=self._session_id,
                 blender_port=self._blender_port if self._blender else None,
                 pending_approvals=len(self._broker_pending()),
+                pinned_references=self._pinned_references,
                 error=self._error,
             )
 
     def snapshot(self) -> WorkerSnapshot:
-        """Return the worker's state with the current session's chat, its past sessions and pinned references."""
+        """Return the worker's state with the current session's chat and its past sessions."""
         with WorkerStore(self.project.database_path) as store:
             sessions = store.list_sessions(self.source_path)
-            pinned = store.pinned_references(self.source_path)
         with self._lock:
             items = self._transcript.items if self._transcript else ()
-        return WorkerSnapshot(info=self.info(), items=items, sessions=tuple(sessions), pinned_references=tuple(pinned))
+        return WorkerSnapshot(info=self.info(), items=items, sessions=tuple(sessions))
 
     @property
     def is_turn_running(self) -> bool:
@@ -176,9 +177,9 @@ class Worker:
             if self.is_turn_running:
                 raise WorkerBusyError(f"{self.source_path} has a turn running; interrupt it or wait for it to end")
             source = self._present_source()
-            with WorkerStore(self.project.database_path) as store:
-                pinned = store.pinned_references(self.source_path)
-                if self._session_id is None:
+            pinned = list(self._pinned_references)
+            if self._session_id is None:
+                with WorkerStore(self.project.database_path) as store:
                     self._start_session(store)
             restore_mark = self._tracker.revisions.get_restore_mark(self.source_path)
             brief = build_brief(source, pinned, restore_mark, feedback)
@@ -189,6 +190,7 @@ class Worker:
                 text=text,
                 detail=brief,
                 feedback_id=feedback.id if feedback else None,
+                images=(feedback.annotated_path,) if feedback else (),
             )
             self._is_interrupt_requested = False
             self._error = ""
@@ -205,6 +207,21 @@ class Worker:
             daemon=True,
         ).start()
         return prompt_item
+
+    def pin_references(self, reference_paths: list[str]) -> tuple[str, ...]:
+        """Pin references to the next prompt, replacing those pinned, and return them sorted.
+
+        Raises:
+            KeyError: the source is not present.
+        """
+        with WorkerStore(self.project.database_path) as store:
+            store.set_pinned_references(self.source_path, reference_paths)
+            pinned = tuple(store.pinned_references(self.source_path))
+        with self._lock:
+            self._pinned_references = pinned
+        logger.info(f"[Worker] {len(pinned)} references pinned to {self.source_path}")
+        self._emit_state()
+        return pinned
 
     def interrupt(self) -> None:
         """Stop the running turn. Its pending approvals are cancelled, and the turn ends as interrupted."""
@@ -335,9 +352,8 @@ class Worker:
             return
 
         # The turn now carries them, so the next one does not repeat them.
-        with WorkerStore(self.project.database_path) as store:
-            if had_pinned:
-                store.set_pinned_references(self.source_path, [])
+        if had_pinned:
+            self.pin_references([])
         if had_restore_mark:
             self._tracker.revisions.clear_restore_mark(self.source_path)
 

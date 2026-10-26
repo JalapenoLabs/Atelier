@@ -1,4 +1,5 @@
 // The right pane: the selected source's worker chat, the project's references rail, and the source's README.
+// Sending feedback from the markup editor switches it to the chat, where the turn it started streams.
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
@@ -15,6 +16,13 @@ Rectangle {
             tabs.currentIndex = tabNames.indexOf(launchOptions.tab)
     }
 
+    Connections {
+        target: studio.markupEditor
+        function onSent() {
+            tabs.currentIndex = 0
+        }
+    }
+
     ColumnLayout {
         anchors.fill: parent
         spacing: 0
@@ -24,7 +32,7 @@ Rectangle {
             Layout.fillWidth: true
 
             TabButton {
-                text: "Chat"
+                text: studio.chatModel.isTurnRunning ? "Chat •" : "Chat"
             }
             TabButton {
                 text: "Refs"
@@ -39,15 +47,7 @@ Rectangle {
             Layout.fillHeight: true
             currentIndex: tabs.currentIndex
 
-            Item {
-                Label {
-                    anchors.centerIn: parent
-                    width: parent.width - 40
-                    horizontalAlignment: Text.AlignHCenter
-                    wrapMode: Text.WordWrap
-                    color: Theme.textDim
-                    text: "The worker chat for this source appears here once Claude Code workers are set up."
-                }
+            ChatPane {
             }
 
             ReferencesRail {

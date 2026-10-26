@@ -39,6 +39,7 @@ class WorkerInfo(BaseModel):
     session_id: str | None = Field(default=None, description="The session the composer continues, if any.")
     blender_port: int | None = Field(default=None, description="The port of its background Blender, while running.")
     pending_approvals: int = 0
+    pinned_references: tuple[str, ...] = Field(default=(), description="References the next prompt will carry.")
     error: str = Field(default="", description="Why it failed, when it did.")
 
     @property
@@ -118,7 +119,6 @@ class WorkerSnapshot(BaseModel):
     info: WorkerInfo
     items: tuple[ChatItem, ...] = ()
     sessions: tuple[SessionInfo, ...] = Field(default=(), description="Newest first.")
-    pinned_references: tuple[str, ...] = ()
 
 
 class Approval(BaseModel):

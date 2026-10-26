@@ -1,5 +1,6 @@
 // The references rail: the project's reference images, tagged by folder. Images dropped here are copied into
-// the project's reference drop folder (`references.drop_folder` in atelier.toml).
+// the project's reference drop folder (`references.drop_folder` in atelier.toml). With a source selected, each
+// image can be pinned to that source's next worker prompt.
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
@@ -36,6 +37,7 @@ Item {
             required property string name
             required property string tag
             required property string url
+            required property bool is_pinned
             width: grid.cellWidth
             height: grid.cellHeight
 
@@ -60,12 +62,37 @@ Item {
                 Label {
                     anchors.bottom: parent.bottom
                     anchors.left: parent.left
-                    anchors.right: parent.right
+                    anchors.right: pinButton.left
                     anchors.margins: 4
                     text: cell.tag
                     elide: Text.ElideRight
                     color: Theme.textDim
                     font.pixelSize: Theme.fontSmall
+                }
+
+                // Pins the reference to the selected source's next prompt; the worker gets its path.
+                ToolButton {
+                    id: pinButton
+                    anchors.bottom: parent.bottom
+                    anchors.right: parent.right
+                    visible: studio.selectedSource !== ""
+                    height: 24
+                    text: cell.is_pinned ? "Pinned" : "Pin"
+                    font.pixelSize: Theme.fontSmall
+                    opacity: cell.is_pinned || hovered ? 1 : 0.6
+                    onClicked: studio.togglePinnedReference(cell.path)
+                    ToolTip.visible: hovered
+                    ToolTip.text: cell.is_pinned ? "Pinned to " + studio.selectedName + "'s next prompt; click to unpin"
+                                                 : "Pin to " + studio.selectedName + "'s next prompt"
+                }
+
+                Rectangle {
+                    anchors.fill: parent
+                    visible: cell.is_pinned
+                    color: "transparent"
+                    border.color: Theme.accent
+                    border.width: 2
+                    radius: 4
                 }
             }
 

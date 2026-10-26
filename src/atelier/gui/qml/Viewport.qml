@@ -288,6 +288,23 @@ Item {
                             orbitOrigin.eulerRotation.x, camera.z)
     }
 
+    // Freeze the 3D view as it is, camera recorded, and open it in the markup editor.
+    function markUpFrame() {
+        const framePath = studio.markupEditor.newFramePath()
+        const target = toUnreal(orbitOrigin.position)
+        const yaw = orbitOrigin.eulerRotation.y
+        const pitch = orbitOrigin.eulerRotation.x
+        const distance = camera.z
+        const label = studio.selectedName + " viewport frame"
+        view.grabToImage(result => {
+            if (!result.saveToFile(framePath)) {
+                console.warn("Could not save the viewport frame to " + framePath)
+                return
+            }
+            studio.markupEditor.openFrame(framePath, label, target.x, target.y, target.z, yaw, pitch, distance)
+        })
+    }
+
     View3D {
         id: view
         anchors.fill: parent

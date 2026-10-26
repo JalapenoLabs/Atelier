@@ -1,7 +1,8 @@
 """A project's workers: one per source that has been prompted, created on first use and kept until the daemon stops.
 
-The pool is what the front doors call: it finds (or makes) a source's worker, sends prompts with their feedback, pins
-references, and answers the worker-side MCP's question of which worker a call comes from.
+The pool is what the front doors call: it finds (or makes) a source's worker, sends prompts with their feedback, and
+answers the worker-side MCP's question of which worker a call comes from. Everything else happens on the worker
+itself (`pool.get(source).interrupt()`, `.new_session()`, `.stop()`, `.pin_references(...)`).
 """
 
 from __future__ import annotations
@@ -15,9 +16,8 @@ from atelierd.project import Project
 from atelierd.revisions import RevisionTracker
 from atelierd.workers.approvals import ApprovalBroker
 from atelierd.workers.feedback import FeedbackService
-from atelierd.workers.models import ChatItem, WorkerEvent, WorkerEventKind, WorkerInfo, WorkerSnapshot
+from atelierd.workers.models import ChatItem, WorkerEvent, WorkerInfo, WorkerSnapshot
 from atelierd.workers.process import BlenderLauncher
-from atelierd.workers.store import WorkerStore
 from atelierd.workers.worker import Worker, WorkerSettings
 
 logger = logging.getLogger(__name__)
@@ -91,21 +91,6 @@ class WorkerPool:
         if feedback and feedback.source != source_path:
             raise ValueError(f"Feedback {feedback.id} is on {feedback.source}, not {source_path}")
         return self.get(source_path).send_prompt(prompt, feedback)
-
-    def pin_references(self, source_path: str, reference_paths: list[str]) -> list[str]:
-        """Pin references to a source's next prompt, replacing what was pinned, and return them.
-
-        Raises:
-            KeyError: the source is not present.
-        """
-        worker = self.get(source_path)
-        with WorkerStore(self.project.database_path) as store:
-            store.set_pinned_references(source_path, reference_paths)
-            pinned = store.pinned_references(source_path)
-        logger.info(f"[Workers] {self.project.name}: {len(pinned)} references pinned to {source_path}")
-        # Pinned references are part of what the chat panel shows, so it hears of the change as a state change.
-        self._emit(WorkerEvent(kind=WorkerEventKind.STATE, source=source_path, info=worker.info()))
-        return pinned
 
     def find_by_token(self, token: str) -> Worker | None:
         """Return the worker a worker-side MCP call comes from, by the token it sends, or None for a stranger."""

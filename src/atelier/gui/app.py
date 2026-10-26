@@ -10,7 +10,12 @@ hidden window offscreen, which is right for the 3D view and the panes, but a hid
 images inside views (the gallery, the references) mostly never arrive, and only its first grab is reliable.
 `--screenshot-shown` shows the window instead, for a run launched where it cannot be seen, such as a silent Hyprland
 special workspace; that screenshot is exactly what the user would see. `--revision`, `--compare`, `--compare-base`
-and `--compare-view` stage a revision (by number) or compare once the source's history has arrived.
+and `--compare-view` stage a revision (by number) or compare once the source's history has arrived. `--tab chat`
+waits for the source's chat, and `--markup` opens the markup editor on the render `--render` names, with the strokes
+and pins of a `markup.json` (`--markup-file`).
+
+The window is a client of the daemon (`atelierd`) on `--socket` (default `$XDG_RUNTIME_DIR/atelier.sock`). When none
+answers, it says so and offers to start one; a screenshot run fails instead.
 """
 
 from __future__ import annotations
@@ -26,10 +31,11 @@ from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtQuick import QQuickWindow
 from PySide6.QtQuickControls2 import QQuickStyle
 
-from atelier.gui.backend import InProcessBackend
-from atelier.gui.studio import Studio
+from atelier.gui.backend import RpcBackend
+from atelier.gui.studio import DaemonState, Studio
 from atelier.gui.tasks import TaskRunner
-from atelierd.registry import default_registry_path
+from atelierd.daemon.system import default_socket_path
+from atelierd.workers import Markup
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +56,11 @@ class GuiOptions(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     project: str | None = Field(default=None, description="A project to open at start, by name or path.")
-    state_root: Path | None = Field(default=None, description="Keep each project's state in <state_root>/<name>/.")
+    socket_path: Path | None = Field(default=None, description="The daemon's socket, when not the default.")
+    state_root: Path | None = Field(
+        default=None,
+        description="The state root a daemon this window starts keeps each project's state in (<state_root>/<name>/).",
+    )
     screenshot: Path | None = Field(default=None, description="Render one frame to this PNG and quit.")
     is_screenshot_shown: bool = Field(default=False, description="Show the window while taking the screenshot.")
     source: str | None = Field(default=None, description="The source to select, project-relative.")
@@ -60,6 +70,8 @@ class GuiOptions(BaseModel):
     compare: str | None = Field(default=None, description="Compare as `renders` or `models`.")
     compare_base: int | None = Field(default=None, description="The revision compare shows beside, by number.")
     compare_view: str | None = Field(default=None, description="The standard view compare shows.")
+    is_markup: bool = Field(default=False, description="Open the markup editor on the render shown.")
+    markup_file: Path | None = Field(default=None, description="A markup.json to put on the editor's capture.")
     view_options: dict[str, object] = Field(
         default_factory=dict,
         description="Viewport and pane settings applied at start (lighting, wireframe, collision, tab).",
@@ -76,7 +88,7 @@ def run_gui(options: GuiOptions) -> int:
     application.setOrganizationName(_ORGANIZATION_NAME)
     application.setApplicationName(_APPLICATION_NAME)
 
-    backend = InProcessBackend(default_registry_path(), state_root=options.state_root)
+    backend = RpcBackend(options.socket_path or default_socket_path(), state_root=options.state_root)
     studio = Studio(backend, TaskRunner())
 
     engine = QQmlApplicationEngine()
@@ -97,7 +109,7 @@ def run_gui(options: GuiOptions) -> int:
     window = windows[0]
 
     studio.projectChanged.connect(lambda: window.setTitle(f"{studio.projectName} - {_APPLICATION_NAME}"))
-    studio.refreshProjects()
+    studio.connectDaemon()
 
     driver: _ScreenshotDriver | None = None
     if options.screenshot:
@@ -131,12 +143,27 @@ class _ScreenshotDriver(QObject):
         self._needs_history = any(
             option is not None for option in (options.revision, options.compare, options.compare_base)
         )
+        self._needs_chat = options.view_options.get("tab") == "chat"
         self.is_written = False
 
         studio.projectChanged.connect(self._on_project)
         studio.stageReadyChanged.connect(self._on_stage_ready_changed)
         studio.historyChanged.connect(self._on_history)
+        studio.chat.loaded.connect(self._on_chat_loaded)
+        studio.daemonChanged.connect(self._on_daemon_changed)
         QTimer.singleShot(_SCREENSHOT_TIMEOUT_MS, self._give_up)
+
+    @Slot()
+    def _on_daemon_changed(self) -> None:
+        if self._studio.property("daemonState") == DaemonState.MISSING:
+            note = self._studio.property("daemonNote")
+            logger.error(f"[Screenshot] No daemon: {note}. Start one with `atelierd run`.")
+            QGuiApplication.exit(1)
+
+    @Slot()
+    def _on_chat_loaded(self) -> None:
+        self._needs_chat = False
+        self._on_stage_ready_changed()
 
     @Slot()
     def _on_project(self) -> None:
@@ -173,8 +200,17 @@ class _ScreenshotDriver(QObject):
                 QGuiApplication.exit(1)
                 return
             self._studio.showRender(matches[0])
+            if self._options.is_markup:
+                self._open_markup(self._options.render)
         self._on_history()
         self._on_stage_ready_changed()
+
+    def _open_markup(self, render_name: str) -> None:
+        markup_editor = self._studio.markup
+        markup_editor.openImage(self._studio.property("stageImage"), render_name)
+        markup_file = self._options.markup_file
+        if markup_file:
+            markup_editor.open_markup(Markup.model_validate_json(markup_file.read_text(encoding="utf-8")))
 
     @Slot()
     def _on_history(self) -> None:
@@ -202,7 +238,8 @@ class _ScreenshotDriver(QObject):
 
     @Slot()
     def _on_stage_ready_changed(self) -> None:
-        if self._is_selected and not self._needs_history and self._studio.isStageReady:
+        is_waiting = self._needs_history or self._needs_chat
+        if self._is_selected and not is_waiting and self._studio.isStageReady:
             self._schedule_grab()
 
     def _schedule_grab(self) -> None:

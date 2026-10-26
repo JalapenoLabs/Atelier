@@ -300,7 +300,7 @@ class TestBrief:
         session.prompt("SAY with references")
         first = session.wait_idle()
         assert "References/Palette/palette.png" in first.items[1].detail
-        assert first.pinned_references == ()
+        assert first.info.pinned_references == ()
 
         session.prompt("SAY without")
         second = session.wait_idle(results=2)

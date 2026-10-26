@@ -295,7 +295,9 @@ class RpcServer:
         register(protocol.STOP_WORKER, lambda params: core.project(params.project).workers.get(params.source).stop())
         register(
             protocol.PIN_REFERENCES,
-            lambda params: core.project(params.project).workers.pin_references(params.source, params.references),
+            lambda params: list(
+                core.project(params.project).workers.get(params.source).pin_references(params.references)
+            ),
         )
 
         register(protocol.CREATE_FEEDBACK, lambda params: core.project(params.project).feedback.create(params.request))

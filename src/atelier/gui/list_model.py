@@ -34,6 +34,20 @@ class RowListModel(QAbstractListModel):
         self.endResetModel()
         self.countChanged.emit()
 
+    def append_row(self, row: BaseModel) -> None:
+        """Add one row at the end, leaving the others (and a view's scroll position) as they are."""
+        position = len(self._rows)
+        self.beginInsertRows(QModelIndex(), position, position)
+        self._rows.append(row)
+        self.endInsertRows()
+        self.countChanged.emit()
+
+    def replace_row(self, position: int, row: BaseModel) -> None:
+        """Replace one row in place."""
+        self._rows[position] = row
+        model_index = self.index(position, 0)
+        self.dataChanged.emit(model_index, model_index)
+
     def rowCount(self, parent: QModelIndex | QPersistentModelIndex = QModelIndex()) -> int:  # noqa: B008
         """Return the number of rows; a list has no children."""
         if parent.isValid():

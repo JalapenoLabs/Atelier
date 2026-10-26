@@ -89,4 +89,70 @@ ApplicationWindow {
             onCurrentTabChanged: windowSettings.contextTab = currentTab
         }
     }
+
+    // Until the daemon answers, the window has nothing to show: say so, and offer to start one.
+    Rectangle {
+        anchors.fill: parent
+        visible: studio.daemonState !== "connected"
+        color: Theme.window
+
+        MouseArea {
+            anchors.fill: parent
+        }
+
+        ColumnLayout {
+            anchors.centerIn: parent
+            width: Math.min(520, parent.width - 80)
+            spacing: 14
+
+            Label {
+                Layout.fillWidth: true
+                horizontalAlignment: Text.AlignHCenter
+                text: studio.daemonState === "missing" ? "atelierd is not running"
+                      : studio.daemonState === "starting" ? "Starting atelierd…" : "Connecting to atelierd…"
+                font.pixelSize: Theme.fontTitle + 4
+                font.bold: true
+                color: Theme.text
+            }
+            Label {
+                Layout.fillWidth: true
+                visible: studio.daemonState === "missing"
+                horizontalAlignment: Text.AlignHCenter
+                wrapMode: Text.WordWrap
+                color: Theme.textDim
+                text: "The catalog, revisions and Claude Code workers live in Atelier's daemon, so they keep running "
+                      + "when this window closes. Start it here in the background, or run `atelierd run` yourself "
+                      + "(or `systemctl --user start atelierd` once `atelierd install` has set up its service)."
+            }
+            Label {
+                Layout.fillWidth: true
+                visible: studio.daemonNote !== ""
+                horizontalAlignment: Text.AlignHCenter
+                wrapMode: Text.WrapAnywhere
+                color: Theme.textDim
+                font.pixelSize: Theme.fontSmall
+                text: studio.daemonNote
+            }
+            BusyIndicator {
+                Layout.alignment: Qt.AlignHCenter
+                running: studio.daemonState !== "missing"
+                visible: running
+            }
+            RowLayout {
+                Layout.alignment: Qt.AlignHCenter
+                visible: studio.daemonState === "missing"
+                spacing: 10
+
+                Button {
+                    text: "Try again"
+                    onClicked: studio.connectDaemon()
+                }
+                Button {
+                    text: "Start atelierd"
+                    highlighted: true
+                    onClicked: studio.startDaemon()
+                }
+            }
+        }
+    }
 }
