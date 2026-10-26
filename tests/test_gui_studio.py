@@ -5,9 +5,10 @@ from __future__ import annotations
 import threading
 from collections.abc import Callable, Iterator
 from pathlib import Path
+from typing import Any
 
 import pytest
-from PySide6.QtCore import QUrl
+from PySide6.QtCore import QSettings, QUrl
 from PySide6.QtGui import QColor, QImage
 
 from atelier.gui.backend import DaemonDisconnected, StudioEvent
@@ -244,8 +245,14 @@ def backend(tmp_path: Path) -> Iterator[FakeBackend]:
 
 
 @pytest.fixture
-def studio(backend: FakeBackend, wait_until: WaitUntil) -> Studio:
-    studio = Studio(backend, TaskRunner())
+def settings(tmp_path: Path) -> QSettings:
+    """The window's settings in a file of the test's own, never the user's configuration."""
+    return QSettings(str(tmp_path / "Atelier.conf"), QSettings.Format.IniFormat)
+
+
+@pytest.fixture
+def studio(backend: FakeBackend, settings: QSettings, wait_until: WaitUntil) -> Studio:
+    studio = Studio(backend, TaskRunner(), settings)
     # Asked for before the daemon answers, as the window's remembered project is: it opens once connected.
     studio.openProject("Fake")
     studio.connectDaemon()
@@ -261,12 +268,140 @@ class TestProject:
 
     def test_filtering_by_status(self, studio: Studio) -> None:
         studio.setProperty("statusFilter", "in-review")
-        assert [row.name for row in studio.property("sourceRows").rows if not row.is_folder] == ["Carbine"]
+        assert [row.name for row in studio.property("sourceRows").rows if row.kind == "source"] == ["Carbine"]
 
     def test_setting_a_status_updates_the_tree(self, studio: Studio, wait_until: WaitUntil) -> None:
         studio.selectSource(POSTER)
         studio.setSourceStatus("approved")
         wait_until(lambda: studio.property("selectedStatus") == "approved")
+
+
+class _CountingTaskRunner(TaskRunner):
+    """A `TaskRunner` that counts the conversions it is asked for, as they are submitted."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.conversion_count = 0
+
+    def run_conversion(
+        self,
+        work: Callable[[], Any],
+        on_done: Callable[[Any], None],
+        on_error: Callable[[Exception], None],
+    ) -> None:
+        self.conversion_count += 1
+        super().run_conversion(work, on_done, on_error)
+
+
+class _OtherProjectBackend(FakeBackend):
+    @property
+    def project_name(self) -> str:
+        return "Other"
+
+
+def _tree_names(studio: Studio) -> list[str]:
+    return [row.name for row in studio.property("sourceRows").rows]
+
+
+def _cursor_name(studio: Studio) -> str:
+    return str(studio.property("sourceRows").rows[studio.property("treeCursorIndex")].name)
+
+
+class TestTree:
+    def test_clicking_an_export_selects_its_source_and_loads_only_that_export(
+        self,
+        backend: FakeBackend,
+        settings: QSettings,
+        wait_until: WaitUntil,
+    ) -> None:
+        tasks = _CountingTaskRunner()
+        studio = Studio(backend, tasks, settings)
+        studio.connectDaemon()
+        studio.openProject("Fake")
+        wait_until(lambda: studio.property("projectName") == "Fake")
+
+        studio.toggleTreeRow(CARBINE)
+        studio.activateTreeRow(STOCK_EXPORT)
+
+        assert studio.property("selectedSource") == CARBINE
+        assert studio.property("selectedExport") == STOCK_EXPORT
+        assert studio.property("modelUrl").endswith(STOCK_EXPORT)
+        assert tasks.conversion_count == 1
+
+    def test_clicking_a_source_shows_its_first_export_even_after_another_was_picked(self, studio: Studio) -> None:
+        studio.toggleTreeRow(CARBINE)
+        studio.activateTreeRow(STOCK_EXPORT)
+        studio.activateTreeRow(CARBINE)
+        assert studio.property("selectedExport") == CARBINE_EXPORT
+
+    def test_clicking_a_folder_opens_and_closes_it(self, studio: Studio) -> None:
+        studio.activateTreeRow("SourceArt/Weapons")
+        assert _tree_names(studio) == ["Posters", "Poster", "Weapons"]
+        studio.activateTreeRow("SourceArt/Weapons")
+        assert _tree_names(studio) == ["Posters", "Poster", "Weapons", "Carbine"]
+
+    def test_filtering_by_an_export_name_opens_its_source(self, studio: Studio) -> None:
+        studio.setProperty("filterText", "stock")
+        assert _tree_names(studio) == ["Weapons", "Carbine", "SM_Stock"]
+
+    def test_the_expansion_is_remembered_per_project(
+        self,
+        studio: Studio,
+        backend: FakeBackend,
+        settings: QSettings,
+        tmp_path: Path,
+        wait_until: WaitUntil,
+    ) -> None:
+        studio.toggleTreeRow(CARBINE)
+        studio.toggleTreeRow("SourceArt/Posters")
+        studio.close()
+
+        reopened = Studio(backend, TaskRunner(), settings)
+        reopened.connectDaemon()
+        reopened.openProject("Fake")
+        wait_until(lambda: reopened.property("projectName") == "Fake")
+        assert _tree_names(reopened) == ["Posters", "Weapons", "Carbine", "SK_Carbine", "SM_Stock"]
+        reopened.close()
+
+        other = Studio(_OtherProjectBackend(tmp_path), TaskRunner(), settings)
+        other.connectDaemon()
+        other.openProject("Other")
+        wait_until(lambda: other.property("projectName") == "Other")
+        assert _tree_names(other) == ["Posters", "Poster", "Weapons", "Carbine"]
+        other.close()
+
+    def test_the_keyboard_moves_opens_closes_and_picks(self, studio: Studio) -> None:
+        studio.moveTreeCursor(1)
+        assert _cursor_name(studio) == "Posters"
+        studio.moveTreeCursor(3)
+        assert _cursor_name(studio) == "Carbine"
+        # Past the end stays on the last row.
+        studio.moveTreeCursor(5)
+        assert _cursor_name(studio) == "Carbine"
+
+        studio.expandAtTreeCursor()
+        assert _tree_names(studio)[-2:] == ["SK_Carbine", "SM_Stock"]
+        assert _cursor_name(studio) == "Carbine"
+        studio.expandAtTreeCursor()
+        assert _cursor_name(studio) == "SK_Carbine"
+        studio.moveTreeCursor(1)
+        studio.activateTreeCursor()
+        assert studio.property("selectedExport") == STOCK_EXPORT
+
+        studio.collapseAtTreeCursor()
+        assert _cursor_name(studio) == "Carbine"
+        studio.collapseAtTreeCursor()
+        assert "SM_Stock" not in _tree_names(studio)
+        studio.collapseAtTreeCursor()
+        assert _cursor_name(studio) == "Weapons"
+
+    def test_the_cursor_stays_on_its_row_while_the_rows_around_it_change(self, studio: Studio) -> None:
+        studio.activateTreeRow(CARBINE)
+        assert studio.property("treeCursorIndex") == 3
+        studio.setProperty("filterText", "carb")
+        assert studio.property("treeCursorIndex") == 1
+        studio.setProperty("filterText", "poster")
+        assert studio.property("treeCursorIndex") == -1
 
 
 class TestSelection:
@@ -588,9 +723,14 @@ def _chat_item(index: int, kind: ChatItemKind, **fields: object) -> ChatItem:
 
 
 class TestDaemon:
-    def test_with_no_daemon_the_window_offers_to_start_one(self, backend: FakeBackend, wait_until: WaitUntil) -> None:
+    def test_with_no_daemon_the_window_offers_to_start_one(
+        self,
+        backend: FakeBackend,
+        settings: QSettings,
+        wait_until: WaitUntil,
+    ) -> None:
         backend.is_daemon_running = False
-        studio = Studio(backend, TaskRunner())
+        studio = Studio(backend, TaskRunner(), settings)
         studio.openProject("Fake")
         studio.connectDaemon()
         wait_until(lambda: studio.property("daemonState") == DaemonState.MISSING)

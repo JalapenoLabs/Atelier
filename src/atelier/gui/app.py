@@ -25,7 +25,7 @@ import sys
 from pathlib import Path, PurePosixPath
 
 from pydantic import BaseModel, ConfigDict, Field
-from PySide6.QtCore import QObject, QTimer, QUrl, Slot
+from PySide6.QtCore import QObject, QSettings, QTimer, QUrl, Slot
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtQuick import QQuickWindow
@@ -89,7 +89,8 @@ def run_gui(options: GuiOptions) -> int:
     application.setApplicationName(_APPLICATION_NAME)
 
     backend = RpcBackend(options.socket_path or default_socket_path(), state_root=options.state_root)
-    studio = Studio(backend, TaskRunner())
+    # Qt's settings for the organization and application named above, the same file the QML `Settings` use.
+    studio = Studio(backend, TaskRunner(), QSettings())
 
     engine = QQmlApplicationEngine()
     engine.rootContext().setContextProperty("studio", studio)

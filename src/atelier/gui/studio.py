@@ -1,7 +1,8 @@
 """The window's view-model: the state QML binds to and the actions it calls, over a `StudioBackend`.
 
-`Studio` holds only what is on screen (the open project, the selection, the filter) and asks the backend for
-everything else, off the UI thread through a `TaskRunner`. QML never talks to the backend directly.
+`Studio` holds only what is on screen (the open project, the selection, the filter, the source tree's open rows
+and the row the keyboard is on) and asks the backend for everything else, off the UI thread through a `TaskRunner`.
+QML never talks to the backend directly. The tree's open rows are remembered per project in the window's settings.
 
 Loading an export follows `docs/viewer.md`: the FBX goes straight to Qt Quick 3D's `RuntimeLoader` for an instant
 picture while Blender converts it in the background, and the converted `.glb` replaces it as soon as it is ready,
@@ -28,7 +29,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict
-from PySide6.QtCore import Property, QObject, QUrl, Signal, Slot
+from PySide6.QtCore import Property, QObject, QSettings, QUrl, Signal, Slot
 
 from atelier.gui.backend import DaemonDisconnected, StudioBackend, StudioEvent
 from atelier.gui.chat import Chat
@@ -45,7 +46,7 @@ from atelier.gui.revisions import (
     revision_label,
 )
 from atelier.gui.tasks import TaskRunner
-from atelier.gui.tree import SourceRow, build_source_rows
+from atelier.gui.tree import RowKind, SourceRow, TreeExpansion, build_source_rows
 from atelierd.catalog import CameraBookmark, Reference, ScanResult, Source, SourceStatus
 from atelierd.exports import ConvertedExport
 from atelierd.revisions import (
@@ -100,6 +101,9 @@ class DaemonState:
 _DAEMON_START_ATTEMPTS = 50
 _DAEMON_START_INTERVAL_S = 0.2
 
+
+# Where each project's tree expansion is kept in the window's settings, as `<group>/<project name>/...`.
+_TREE_SETTINGS_GROUP = "sourceTree"
 
 # The gallery's first group: the stage revision's standard renders of the selected export.
 STANDARD_GROUP = "Standard"
@@ -268,19 +272,26 @@ class Studio(QObject):
     compareChanged = Signal()
     daemonChanged = Signal()
     approvalsChanged = Signal()
+    treeCursorChanged = Signal()
 
     # Emitted by the core's threads (the watcher, revisions); connected queued, so the handler runs on the UI thread.
     _coreEventArrived = Signal(object)
 
-    def __init__(self, backend: StudioBackend, tasks: TaskRunner) -> None:
+    def __init__(self, backend: StudioBackend, tasks: TaskRunner, settings: QSettings) -> None:
         super().__init__()
         self._backend = backend
         self._tasks = tasks
+        # Where each project's tree expansion is remembered; the window's own settings live beside it.
+        self._settings = settings
 
         self._projects: list[str] = []
         self._project_name = ""
         self._sources: list[Source] = []
-        self._collapsed: set[str] = set()
+        self._tree_expansion = TreeExpansion()
+        # The rows the tree model holds, typed, for the cursor and the clicks.
+        self._tree_rows: list[SourceRow] = []
+        # The tree row the keyboard is on, by key, so it survives the rows being rebuilt.
+        self._tree_cursor = ""
         self._filter_text = ""
         self._status_filter = ""
         self._selected_source = ""
@@ -488,6 +499,9 @@ class Studio(QObject):
     def _get_is_busy(self) -> bool:
         return self._busy_count > 0
 
+    def _get_tree_cursor_index(self) -> int:
+        return self._tree_row_index(self._tree_cursor)
+
     def _get_is_stage_ready(self) -> bool:
         """Whether the stage shows what it will settle on: a reported model with its stats, an image, or compare."""
         if self.markup.is_open:
@@ -546,6 +560,7 @@ class Studio(QObject):
     daemonNote = Property(str, _get_daemon_note, notify=daemonChanged)
     isBusy = Property(bool, _get_is_busy, notify=busyChanged)
     isStageReady = Property(bool, _get_is_stage_ready, notify=stageReadyChanged)
+    treeCursorIndex = Property(int, _get_tree_cursor_index, notify=treeCursorChanged)
 
     @property
     def export_paths(self) -> list[str]:
@@ -647,7 +662,8 @@ class Studio(QObject):
 
     def _on_project_opened(self, result: ScanResult) -> None:
         self._project_name = self._backend.project_name
-        self._collapsed.clear()
+        self._tree_expansion = self._load_tree_expansion()
+        self._tree_cursor = ""
         self._sources = list(result.sources)
         self._requested_renders.clear()
         self._clear_selection()
@@ -692,7 +708,7 @@ class Studio(QObject):
             self._clear_selection()
             return
         if is_selection_touched:
-            self._show_selection(keep_export=True)
+            self._show_selection(self._selected_export, is_new_source=False)
         self.selectionChanged.emit()
 
     # ####################### #
@@ -700,24 +716,108 @@ class Studio(QObject):
     # ####################### #
 
     @Slot(str)
-    def toggleFolder(self, folder_path: str) -> None:
-        """Open or close a folder in the tree."""
-        if folder_path in self._collapsed:
-            self._collapsed.remove(folder_path)
-        else:
-            self._collapsed.add(folder_path)
-        self._rebuild_tree()
+    def selectSource(self, source_path: str) -> None:
+        """Show a source: its first export on the stage, its renders, README and bookmarks beside it."""
+        self._select_source(source_path, export_path="")
 
     @Slot(str)
-    def selectSource(self, source_path: str) -> None:
-        """Show a source: its exports on the stage, its renders, README and bookmarks beside it."""
+    def activateTreeRow(self, key: str) -> None:
+        """Act on a tree row as a click does: open or close a folder, show a source's first export, show an export.
+
+        An export of another source selects that source first; the clicked export is the only one loaded.
+        """
+        row = self._find_tree_row(key)
+        if not row:
+            logger.warning(f"[Studio] activateTreeRow: the tree has no row '{key}'")
+            return
+        self._set_tree_cursor(key)
+        if row.kind == RowKind.FOLDER:
+            self.toggleTreeRow(key)
+            return
+        export_path = key if row.kind == RowKind.EXPORT else ""
+        if row.source != self._selected_source:
+            self._select_source(row.source, export_path)
+            return
+
+        # The tree lists the project's files, so an export the revision on the stage lacks means the newest again.
+        if export_path and export_path not in self.export_paths:
+            self.followNewest()
+        export_path = export_path or next(iter(self.export_paths), "")
+        if export_path:
+            self.selectExport(export_path)
+
+    @Slot(str)
+    def toggleTreeRow(self, key: str) -> None:
+        """Open or close a folder or a source in the tree, and remember it for the project."""
+        row = self._find_tree_row(key)
+        if not (row and row.is_expandable):
+            logger.debug(f"[Studio] toggleTreeRow: '{key}' is not an expandable row of the tree")
+            return
+        self._tree_cursor = key
+        self._tree_expansion = self._tree_expansion.toggled(row)
+        self._save_tree_expansion()
+        self._rebuild_tree()
+
+    @Slot(int)
+    def moveTreeCursor(self, step: int) -> None:
+        """Move the keyboard's row up (negative) or down (positive), stopping at either end."""
+        rows = self._tree_rows
+        if not rows:
+            logger.debug("[Studio] moveTreeCursor: the tree is empty")
+            return
+        index = self._tree_row_index(self._tree_cursor)
+        target = 0 if index < 0 else min(max(index + step, 0), len(rows) - 1)
+        self._set_tree_cursor(rows[target].key)
+
+    @Slot()
+    def collapseAtTreeCursor(self) -> None:
+        """Left: close the row the keyboard is on, or go to its parent when it is closed already."""
+        rows = self._tree_rows
+        index = self._tree_row_index(self._tree_cursor)
+        if index < 0:
+            logger.debug("[Studio] collapseAtTreeCursor: no row has the keyboard")
+            return
+        row = rows[index]
+        if row.is_expanded:
+            self.toggleTreeRow(row.key)
+            return
+        parent = next((above for above in reversed(rows[:index]) if above.depth < row.depth), None)
+        if parent:
+            self._set_tree_cursor(parent.key)
+
+    @Slot()
+    def expandAtTreeCursor(self) -> None:
+        """Right: open the row the keyboard is on, or go to its first child when it is open already."""
+        rows = self._tree_rows
+        index = self._tree_row_index(self._tree_cursor)
+        if index < 0:
+            logger.debug("[Studio] expandAtTreeCursor: no row has the keyboard")
+            return
+        row = rows[index]
+        if row.is_expandable and not row.is_expanded:
+            self.toggleTreeRow(row.key)
+            return
+        has_first_child = index + 1 < len(rows) and rows[index + 1].depth > row.depth
+        if has_first_child:
+            self._set_tree_cursor(rows[index + 1].key)
+
+    @Slot()
+    def activateTreeCursor(self) -> None:
+        """Enter or Space: act on the row the keyboard is on, as a click does."""
+        if self._tree_row_index(self._tree_cursor) < 0:
+            logger.debug("[Studio] activateTreeCursor: no row has the keyboard")
+            return
+        self.activateTreeRow(self._tree_cursor)
+
+    def _select_source(self, source_path: str, export_path: str) -> None:
+        """Select a source and show `export_path` on the stage, or its first export when that is empty."""
         if not self._find_source(source_path):
-            logger.warning(f"[Studio] selectSource: no source '{source_path}' in {self._project_name}")
+            logger.warning(f"[Studio] No source '{source_path}' in {self._project_name}")
             return
         if source_path == self._selected_source:
             return
         self._selected_source = source_path
-        self._show_selection(keep_export=False)
+        self._show_selection(export_path, is_new_source=True)
         self.selectionChanged.emit()
 
     @Slot(str)
@@ -736,8 +836,43 @@ class Studio(QObject):
 
     def _rebuild_tree(self) -> None:
         status = SourceStatus(self._status_filter) if self._status_filter else None
-        rows = build_source_rows(self._sources, self._filter_text, status, frozenset(self._collapsed))
-        self._source_rows.set_rows(rows)
+        self._tree_rows = build_source_rows(self._sources, self._filter_text, status, self._tree_expansion)
+        self._source_rows.set_rows(self._tree_rows)
+        # The rows moved under the cursor, or it was filtered away.
+        self.treeCursorChanged.emit()
+
+    def _set_tree_cursor(self, key: str) -> None:
+        if key == self._tree_cursor:
+            return
+        self._tree_cursor = key
+        self.treeCursorChanged.emit()
+
+    def _tree_row_index(self, key: str) -> int:
+        """The index of the tree row with `key`, or -1 when no row has it."""
+        return next((index for index, row in enumerate(self._tree_rows) if row.key == key), -1)
+
+    def _find_tree_row(self, key: str) -> SourceRow | None:
+        return next((row for row in self._tree_rows if row.key == key), None)
+
+    def _load_tree_expansion(self) -> TreeExpansion:
+        """Read the open project's remembered tree expansion; a project never seen before starts on the default."""
+        group = f"{_TREE_SETTINGS_GROUP}/{self._project_name}"
+        remembered: dict[str, frozenset[str]] = {}
+        for setting_name in ("collapsedFolders", "expandedSources"):
+            value = self._settings.value(f"{group}/{setting_name}", [], type=list)
+            if not isinstance(value, list):
+                logger.warning(f"[Studio] Ignoring the unreadable tree setting {group}/{setting_name}: {value!r}")
+                value = []
+            remembered[setting_name] = frozenset(str(path) for path in value)
+        return TreeExpansion(
+            collapsed_folders=remembered["collapsedFolders"],
+            expanded_sources=remembered["expandedSources"],
+        )
+
+    def _save_tree_expansion(self) -> None:
+        group = f"{_TREE_SETTINGS_GROUP}/{self._project_name}"
+        self._settings.setValue(f"{group}/collapsedFolders", sorted(self._tree_expansion.collapsed_folders))
+        self._settings.setValue(f"{group}/expandedSources", sorted(self._tree_expansion.expanded_sources))
 
     def _clear_selection(self) -> None:
         self._selected_source = ""
@@ -754,29 +889,35 @@ class Studio(QObject):
         self._set_export("")
         self.selectionChanged.emit()
 
-    def _show_selection(self, keep_export: bool) -> None:
-        """Fill the stage and the context panes from the selected source."""
+    def _show_selection(self, export_path: str, is_new_source: bool) -> None:
+        """Fill the stage and the context panes from the selected source, showing `export_path` if it has it.
+
+        A newly selected source starts over: its newest revision, its own chat, and no markup open.
+        """
         source = self._find_source(self._selected_source)
         if not source:
             logger.warning(f"[Studio] The selected source '{self._selected_source}' is not in the catalog")
             return
 
-        if not keep_export:
+        if is_new_source:
             self._reset_revisions()
             self.markup.close()
             self.chat.load(source.path)
         self._readme_text = self._read_readme(source)
         self.readmeChanged.emit()
         self._refresh_bookmarks()
-        self._show_stage_files(keep_export)
+        self._show_stage_files(export_path)
         self._refresh_history()
 
-    def _show_stage_files(self, keep_export: bool) -> None:
-        """Fill the export picker, the gallery and the stage from the revision the stage shows."""
+    def _show_stage_files(self, export_path: str) -> None:
+        """Fill the export picker, the gallery and the stage from the revision the stage shows.
+
+        The stage shows `export_path` if that revision has it, and its first export otherwise.
+        """
         exports = self._stage_exports()
         self._export_rows.set_rows([ExportRow(path=path, name=PurePosixPath(path).stem) for path in exports])
 
-        export = self._selected_export if keep_export and self._selected_export in exports else ""
+        export = export_path if export_path in exports else ""
         export = export or (exports[0] if exports else "")
         self._stage_image = ""
         self._stage_image_name = ""
@@ -1003,7 +1144,7 @@ class Studio(QObject):
             self._compare_base_id = previous_revision_id(history, revision_id)
             self._is_comparing = bool(self._compare_base_id)
             self.compareChanged.emit()
-        self._show_stage_files(keep_export=True)
+        self._show_stage_files(self._selected_export)
         self.historyChanged.emit()
 
     @Slot()
@@ -1084,7 +1225,7 @@ class Studio(QObject):
         self._staged_revision_id = 0
         self._is_comparing = False
         self.compareChanged.emit()
-        self._show_stage_files(keep_export=True)
+        self._show_stage_files(self._selected_export)
         self._refresh_history()
 
     def _reset_revisions(self) -> None:
@@ -1119,7 +1260,7 @@ class Studio(QObject):
 
         staged = self._staged_revision()
         if self._is_showing_past() and (was_showing is None or was_showing.id != (staged.id if staged else 0)):
-            self._show_stage_files(keep_export=True)
+            self._show_stage_files(self._selected_export)
         else:
             self._render_rows.set_rows(self._build_render_rows())
         self._refresh_revision_views()
