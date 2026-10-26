@@ -22,7 +22,7 @@ from pathlib import Path, PurePosixPath
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
-from atelierd.blender import BlenderError, run_blender_script
+from atelierd.blender import BlenderError, BlenderMissingError, run_blender_script
 from atelierd.revisions.models import RenderState, StandardRenderSet
 
 logger = logging.getLogger(__name__)
@@ -96,7 +96,8 @@ def render_set(
     """Render every standard view of one export into a revision's folder. Blocks for as long as Blender takes.
 
     A Blender failure is recorded in the set's metadata and returned as a failed set rather than raised: the same
-    bytes would fail the same way again, so they are not retried until the renderer changes.
+    bytes would fail the same way again, so they are not retried until the renderer changes. A machine without
+    Blender records nothing and returns the set as missing.
     """
     folder.mkdir(parents=True, exist_ok=True)
     partial_folder = folder / f".partial-{uuid.uuid4().hex}"
@@ -108,6 +109,10 @@ def render_set(
             run_blender_script(_RENDER_SCRIPT, [str(export_file), str(partial_folder), name, str(texture_folder)])
             for view in STANDARD_VIEWS:
                 (partial_folder / f"{name}-{view}.png").replace(folder / f"{name}-{view}.png")
+        except BlenderMissingError as error:
+            # Not the export's fault: leave the set unrendered, to be rendered once Blender is installed.
+            logger.error(f"[Renders] Cannot render {export} for revision {revision_id}: {error}")
+            return read_render_set(folder, revision_id, export, export_sha256, name)
         except (BlenderError, OSError) as error:
             logger.error(f"[Renders] Could not render {export} for revision {revision_id}: {error}")
             error_text = str(error)

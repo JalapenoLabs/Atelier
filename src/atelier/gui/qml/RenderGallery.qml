@@ -1,5 +1,6 @@
-// The render gallery under the stage: every render of the source, grouped by stem. Clicking one shows it full
-// size on the stage. The standard renders join as the first group with revisions.
+// The render gallery under the stage: the stage revision's standard renders of the selected export as the first
+// group, then every render of the source, grouped by stem. Clicking one shows it full size on the stage. A standard
+// group with no images yet says why (rendering, failed, not rendered).
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
@@ -41,14 +42,25 @@ Rectangle {
             required property string url
 
             readonly property bool isShown: studio.stageImage === url
-            width: Math.max(thumbnail.paintedWidth, 60) + 8
+            width: tile.url === "" ? 110 : Math.max(thumbnail.paintedWidth, 60) + 8
             height: gallery.height - 12
             radius: 4
             color: isShown ? Theme.selection : Theme.panelRaised
             border.color: isShown ? Theme.accent : "transparent"
 
+            Label {
+                anchors.centerIn: parent
+                visible: tile.url === ""
+                width: parent.width - 8
+                horizontalAlignment: Text.AlignHCenter
+                wrapMode: Text.WordWrap
+                text: tile.name
+                color: Theme.textDim
+            }
+
             Image {
                 id: thumbnail
+                visible: tile.url !== ""
                 anchors.top: parent.top
                 anchors.horizontalCenter: parent.horizontalCenter
                 anchors.topMargin: 4
@@ -63,6 +75,7 @@ Rectangle {
 
             Label {
                 id: caption
+                visible: tile.url !== ""
                 anchors.bottom: parent.bottom
                 anchors.bottomMargin: 2
                 anchors.horizontalCenter: parent.horizontalCenter

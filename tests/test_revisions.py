@@ -333,6 +333,17 @@ class TestStandardRenders:
         assert revisions.render_standard(revision.id, CARBINE_EXPORT).state is RenderState.FAILED
         assert len(fake_blender.rendered) == 1
 
+    def test_a_machine_without_blender_records_no_failure(
+        self,
+        revisions: Revisions,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("ATELIER_BLENDER", "no-such-blender-command")
+        revision = revisions.record(CARBINE, RevisionTrigger.CHANGE)
+        assert revision is not None
+
+        assert revisions.render_standard(revision.id, CARBINE_EXPORT).state is RenderState.MISSING
+
     def test_a_set_from_another_renderer_version_counts_as_missing(
         self,
         revisions: Revisions,

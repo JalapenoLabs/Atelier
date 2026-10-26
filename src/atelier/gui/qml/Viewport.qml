@@ -1,6 +1,9 @@
 // The 3D viewport: the selected export on a grid in Unreal units, beside a 180 cm figure, with orbit, pan and
 // zoom (drag, Ctrl+drag, wheel), studio or clay lighting, wireframe, collision hulls and camera bookmarks.
 //
+// The stage has one primary viewport, bound to the studio's model, with its controls and remembered settings. Compare
+// shows two more, each given its own model and stats, with the orbit shared between them (see ComparePage.qml).
+//
 // Frames. Qt Quick 3D's scene is Y up; Unreal is Z up. Both load paths (the FBX through assimp, the .glb from
 // Blender) arrive Y up in centimetres, so a Qt scene point (x, y, z) is the Unreal point (x, z, y). Bookmarks and
 // the stats are kept in Unreal's frame and converted only here.
@@ -14,6 +17,18 @@ import QtQuick3D.Helpers
 
 Item {
     id: viewport
+
+    // What to show. The primary viewport follows the studio's stage; compare's viewports are given their own.
+    property bool isPrimary: true
+    property string modelUrl: studio.modelUrl
+    property var modelStats: studio.stats
+    // Framing happens once per key: reloading the same export keeps the camera.
+    property string frameKey: studio.selectedExport
+    property bool framesOnLoad: true
+    // The orbit, so two viewports can share one camera.
+    property alias orbitPosition: orbitOrigin.position
+    property alias orbitRotation: orbitOrigin.eulerRotation
+    property alias cameraDistance: camera.z
 
     // Display settings, remembered per machine; a launch flag overrides one for this run.
     property string lighting: "studio"
@@ -42,17 +57,45 @@ Item {
     readonly property real defaultPitch: -22
     property int loadAttempts: 0
 
-    Settings {
-        category: "viewport"
-        property alias lighting: viewport.lighting
-        property alias wireframe: viewport.wireframe
-        property alias showCollision: viewport.showCollision
-        property alias showScale: viewport.showScale
-        property alias showGrid: viewport.showGrid
-        property alias preferDirect: viewport.preferDirect
+    // Only the primary viewport remembers its display settings; compare's take them from it. Each setting is copied
+    // in once at start and written back on every change.
+    readonly property var rememberedNames: ["lighting", "wireframe", "showCollision", "showScale", "showGrid",
+                                            "preferDirect"]
+
+    Loader {
+        id: rememberedLoader
+        active: viewport.isPrimary
+        sourceComponent: Settings {
+            category: "viewport"
+            property string lighting: "studio"
+            property bool wireframe: false
+            property bool showCollision: false
+            property bool showScale: true
+            property bool showGrid: true
+            property bool preferDirect: false
+        }
     }
 
+    function remember() {
+        const remembered = rememberedLoader.item
+        if (!remembered)
+            return
+        for (const name of rememberedNames)
+            remembered[name] = viewport[name]
+    }
+
+    onWireframeChanged: remember()
+    onShowScaleChanged: remember()
+    onShowGridChanged: remember()
+
     Component.onCompleted: {
+        if (!isPrimary) {
+            reload()
+            return
+        }
+        const remembered = rememberedLoader.item
+        for (const name of rememberedNames)
+            viewport[name] = remembered[name]
         for (const name of ["lighting", "wireframe", "collision", "direct"]) {
             if (launchOptions[name] === undefined)
                 continue
@@ -63,18 +106,35 @@ Item {
         reload()
     }
 
-    onPreferDirectChanged: studio.setDirectPreferred(preferDirect)
-    onLightingChanged: applyDisplay()
-    onShowCollisionChanged: applyDisplay()
+    onPreferDirectChanged: {
+        remember()
+        if (isPrimary)
+            studio.setDirectPreferred(preferDirect)
+    }
+    onLightingChanged: {
+        remember()
+        applyDisplay()
+    }
+    onShowCollisionChanged: {
+        remember()
+        applyDisplay()
+    }
+    onModelStatsChanged: {
+        if (hasModel)
+            updateBounds()
+    }
+    onModelUrlChanged: {
+        if (!isPrimary)
+            reload()
+    }
 
+    // The primary viewport reloads on every new model revision, even when the URL is unchanged (the file was
+    // rewritten on disk).
     Connections {
         target: studio
+        enabled: viewport.isPrimary
         function onModelChanged() {
             viewport.reload()
-        }
-        function onStatsChanged() {
-            if (viewport.hasModel)
-                viewport.updateBounds()
         }
     }
 
@@ -93,9 +153,9 @@ Item {
         collisionModels = []
         originalMaterials = []
         loader.source = ""
-        if (!studio.modelUrl)
+        if (!modelUrl)
             return
-        loader.source = studio.modelUrl
+        loader.source = modelUrl
         loadAttempts = 0
         Qt.callLater(afterLoad)
     }
@@ -106,14 +166,14 @@ Item {
             return
         }
         if (loader.status !== RuntimeLoader.Success) {
-            studio.reportModelLoad(false, loader.errorString || "the model did not load")
+            reportLoad(false, loader.errorString || "the model did not load")
             return
         }
 
         const found = {render: [], collision: []}
         collectModels(loader, found)
         if (found.render.length === 0) {
-            studio.reportModelLoad(false, "the file loaded but holds no meshes")
+            reportLoad(false, "the file loaded but holds no meshes")
             return
         }
         renderModels = found.render
@@ -122,14 +182,22 @@ Item {
         applyDisplay()
         hasModel = true
         updateBounds()
-        studio.reportModelLoad(true, "")
+        reportLoad(true, "")
+    }
+
+    // Only the stage's model decides the load path and readiness; compare's report nothing.
+    function reportLoad(isLoaded, errorText) {
+        if (isPrimary)
+            studio.reportModelLoad(isLoaded, errorText)
+        else if (!isLoaded)
+            console.warn("Compare could not load " + modelUrl + ": " + errorText)
     }
 
     // Bounds come from Blender's measurement once it has arrived: it leaves collision hulls out and is the same
     // for both load paths. Until then they are measured from the loaded meshes, whose bounds Qt only knows once
     // a frame has rendered, so the measurement repeats each frame until it finds them.
     function updateBounds() {
-        const stats = studio.stats
+        const stats = modelStats
         if (stats.boundsMin !== undefined) {
             boundsMin = toQt(Qt.vector3d(stats.boundsMin[0], stats.boundsMin[1], stats.boundsMin[2]))
             boundsMax = toQt(Qt.vector3d(stats.boundsMax[0], stats.boundsMax[1], stats.boundsMax[2]))
@@ -138,9 +206,9 @@ Item {
         }
 
         const hasBounds = boundsMax.x > boundsMin.x || boundsMax.y > boundsMin.y || boundsMax.z > boundsMin.z
-        if (hasBounds && framedExport !== studio.selectedExport) {
+        if (hasBounds && framesOnLoad && framedExport !== frameKey) {
             frame(launchOptions.frame === "figure")
-            framedExport = studio.selectedExport
+            framedExport = frameKey
         }
         boundsWatch.running = !hasBounds
     }
@@ -313,15 +381,18 @@ Item {
 
     Shortcut {
         sequence: "F"
+        enabled: viewport.isPrimary && viewport.visible
         onActivated: viewport.frame(false)
     }
 
     Shortcut {
         sequence: "Shift+F"
+        enabled: viewport.isPrimary && viewport.visible
         onActivated: viewport.frame(true)
     }
 
     StatsOverlay {
+        visible: viewport.isPrimary && studio.selectedExport !== ""
         anchors.left: parent.left
         anchors.top: parent.top
         anchors.margins: Theme.gap * 1.5
@@ -330,6 +401,7 @@ Item {
     }
 
     ViewportToolbar {
+        visible: viewport.isPrimary
         anchors.right: parent.right
         anchors.top: parent.top
         anchors.margins: Theme.gap * 1.5
@@ -337,6 +409,7 @@ Item {
     }
 
     Label {
+        visible: viewport.isPrimary
         anchors.bottom: parent.bottom
         anchors.left: parent.left
         anchors.margins: Theme.gap * 1.5
@@ -348,6 +421,8 @@ Item {
     BusyIndicator {
         anchors.centerIn: parent
         visible: running
-        running: !viewport.hasModel && studio.selectedExport !== "" && studio.conversionState === "running"
+        running: viewport.isPrimary
+                 ? !viewport.hasModel && studio.selectedExport !== "" && studio.conversionState === "running"
+                 : !viewport.hasModel
     }
 }

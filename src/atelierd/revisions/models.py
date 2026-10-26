@@ -117,6 +117,7 @@ class RestoreResult(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
+    target: Revision = Field(description="The revision whose files were written back.")
     pre_restore: Revision = Field(description="The state before the restore; restoring it undoes the restore.")
     restored: Revision = Field(description="The new revision recording the restored state.")
     written: tuple[str, ...] = Field(default=(), description="Files written back.")

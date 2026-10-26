@@ -5,7 +5,11 @@ project's state outside the projects).
 
 `atelier scan <project>` scans a project into its catalog and lists every source with its exports and renders.
 `<project>` is a path to the project's folder or the name of a project scanned before. With `--watch` it then keeps
-the catalog live and prints each settled change until interrupted.
+the catalog live, records a revision of each source whose files change (with standard renders of changed exports),
+and prints each settled change until interrupted.
+
+`atelier prune <project> --keep N` deletes all but each source's newest N revisions, and the snapshotted bytes and
+standard renders only they needed.
 
 `--state-dir` and `--config` let a scan run against a project without writing anything into it.
 """
@@ -20,8 +24,10 @@ from pathlib import Path, PurePosixPath
 
 from atelierd.catalog import Catalog, CatalogEvent, CatalogWatcher, ScanResult, Source
 from atelierd.config import ConfigError
+from atelierd.constants import DEFAULT_PRUNE_KEEP
 from atelierd.project import open_project
 from atelierd.registry import RegistryError, default_registry_path, register_project, resolve_project_root
+from atelierd.revisions import RevisionEvent, RevisionEventKind, Revisions, RevisionTracker
 
 logger = logging.getLogger(__name__)
 
@@ -43,9 +49,10 @@ def main(argv: list[str] | None = None) -> int:
     if arguments.command is None:
         return _run_gui(arguments)
 
+    command_by_name = {"scan": _scan, "prune": _prune}
     try:
-        return _scan(arguments)
-    except (ConfigError, RegistryError, NotADirectoryError) as error:
+        return command_by_name[arguments.command](arguments)
+    except (ConfigError, RegistryError, NotADirectoryError, ValueError) as error:
         print(f"atelier: {error}", file=sys.stderr)
         return 2
 
@@ -80,6 +87,17 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     scan_parser.add_argument("--watch", action="store_true", help="Keep the catalog live and print each change.")
     scan_parser.add_argument("-v", "--verbose", action="count", default=0, help="Log more (-v info, -vv debug).")
+
+    prune_parser = subparsers.add_parser("prune", help="Delete all but each source's newest revisions.")
+    prune_parser.add_argument("project", help="The project's folder, or the name of a project scanned before.")
+    prune_parser.add_argument(
+        "--keep",
+        type=int,
+        default=DEFAULT_PRUNE_KEEP,
+        help=f"Revisions to keep per source (default {DEFAULT_PRUNE_KEEP}).",
+    )
+    prune_parser.add_argument("--state-dir", type=Path, help="The state folder, when not <project>/.atelier/.")
+    prune_parser.add_argument("-v", "--verbose", action="count", default=0, help="Log more (-v info, -vv debug).")
     return parser
 
 
@@ -146,12 +164,37 @@ def _scan(arguments: argparse.Namespace) -> int:
         return 0
 
     print(f"\nWatching {project.name} for changes (Ctrl+C to stop)...", flush=True)
+    tracker = RevisionTracker(Revisions(project), on_event=_print_revision_event)
+    tracker.start()
+
+    def on_catalog_event(event: CatalogEvent) -> None:
+        _print_event(event)
+        tracker.handle_catalog_event(event)
+
     stop_event = threading.Event()
-    watcher = CatalogWatcher(catalog, on_event=_print_event)
+    watcher = CatalogWatcher(catalog, on_event=on_catalog_event)
     try:
         watcher.run(stop_event)
     except KeyboardInterrupt:
         stop_event.set()
+    finally:
+        tracker.stop()
+    return 0
+
+
+def _prune(arguments: argparse.Namespace) -> int:
+    project_root = resolve_project_root(arguments.project, default_registry_path())
+    project = open_project(project_root, state_dir=arguments.state_dir)
+    if not project.database_path.is_file():
+        print(f"atelier: {project.name} has no state at {project.state_dir}; nothing to prune", file=sys.stderr)
+        return 2
+
+    result = Revisions(project).prune(arguments.keep)
+    megabytes = result.bytes_freed / 1_000_000
+    print(
+        f"{project.name}: removed {result.revisions_removed} revisions, {result.objects_removed} objects "
+        f"({megabytes:.1f} MB) and {result.render_folders_removed} render folders"
+    )
     return 0
 
 
@@ -207,3 +250,11 @@ def _print_event(event: CatalogEvent) -> None:
             print(f"{label:>8}  {path}", flush=True)
     if change.references_changed:
         print("references changed", flush=True)
+
+
+def _print_revision_event(event: RevisionEvent) -> None:
+    label_by_kind = {
+        RevisionEventKind.RECORDED: "revision",
+        RevisionEventKind.RENDERED: "rendered",
+    }
+    print(f"{label_by_kind[event.kind]:>8}  {event.source}  (revision {event.revision_id})", flush=True)

@@ -290,6 +290,7 @@ class Revisions:
             f"deleted, {len(skipped)} shared files left alone"
         )
         return RestoreResult(
+            target=target,
             pre_restore=pre_restore,
             restored=restored or pre_restore,
             written=tuple(written),

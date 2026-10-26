@@ -1,5 +1,5 @@
-// The centre pane: the selected source's header, the stage (3D viewport or a render full size) and, under it,
-// the render gallery. The revision filmstrip and two-up compare join the stage here with revisions.
+// The centre pane: the selected source's header, the stage (3D viewport, a render full size, or compare) and,
+// under it, the render gallery and the revision filmstrip.
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
@@ -102,9 +102,12 @@ Rectangle {
             StackLayout {
                 SplitView.fillHeight: true
                 SplitView.minimumHeight: 240
-                currentIndex: studio.stageImage !== "" ? 1 : (studio.selectedExport !== "" ? 0 : 2)
+                currentIndex: studio.isComparing ? 3
+                              : studio.stageImage !== "" ? 1
+                              : studio.selectedExport !== "" ? 0 : 2
 
                 Viewport {
+                    id: primaryViewport
                 }
 
                 ImageStage {
@@ -121,9 +124,18 @@ Rectangle {
                               : "This source has no exports or renders yet"
                     }
                 }
+
+                ComparePage {
+                    primaryViewport: primaryViewport
+                }
             }
 
             RenderGallery {
+                SplitView.preferredHeight: 150
+                SplitView.minimumHeight: 90
+            }
+
+            Filmstrip {
                 SplitView.preferredHeight: 150
                 SplitView.minimumHeight: 90
             }
