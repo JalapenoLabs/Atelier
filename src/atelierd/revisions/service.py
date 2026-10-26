@@ -276,7 +276,9 @@ class Revisions:
             if pre_restore is None:
                 raise RuntimeError(f"{source_path} has no revision after snapshotting it")
 
-            written, deleted, skipped = self._write_revision(source, target, pre_restore)
+            # Held so a prune in another process cannot delete the target's objects halfway through the writes.
+            with self.objects.shared_lock():
+                written, deleted, skipped = self._write_revision(source, target, pre_restore)
             restored = self._record_locked(
                 source_path,
                 RevisionTrigger.RESTORE,

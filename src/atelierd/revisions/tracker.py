@@ -51,13 +51,16 @@ class RevisionTracker:
         self._pending_guard = threading.Lock()
         # (revision id, export path) of every render queued or running.
         self._pending: set[tuple[int, str]] = set()
+        # Set by `stop()`: a Blender already running finishes, but nothing is reported to a listener being torn down.
+        self._is_stopped = False
 
     def start(self) -> None:
         """Catch up in the background: record every source that changed while nothing watched, or has no revision."""
         self._submit_record(self._catch_up)
 
     def stop(self) -> None:
-        """Stop taking work and drop what has not started; a running Blender finishes on its own."""
+        """Stop taking work and drop what has not started; a running Blender finishes on its own, unreported."""
+        self._is_stopped = True
         self._record_executor.shutdown(wait=False, cancel_futures=True)
         self._render_executor.shutdown(wait=False, cancel_futures=True)
 
@@ -140,7 +143,7 @@ class RevisionTracker:
 
     def _after_recording(self, revision: Revision) -> None:
         """Report a new revision and queue the renders it needs."""
-        self._on_event(RevisionEvent(kind=RevisionEventKind.RECORDED, source=revision.source, revision_id=revision.id))
+        self._report(RevisionEvent(kind=RevisionEventKind.RECORDED, source=revision.source, revision_id=revision.id))
         for export_path in self.revisions.exports_to_render(revision):
             self._queue_render(revision, export_path)
 
@@ -157,11 +160,17 @@ class RevisionTracker:
             finally:
                 with self._pending_guard:
                     self._pending.discard(key)
-            self._on_event(
+            self._report(
                 RevisionEvent(kind=RevisionEventKind.RENDERED, source=revision.source, revision_id=revision.id)
             )
 
         self._submit(self._render_executor, render, f"rendering {export_path} for revision {revision.id}")
+
+    def _report(self, event: RevisionEvent) -> None:
+        if self._is_stopped:
+            logger.debug(f"[Tracker] Stopped; not reporting {event.kind.value} revision {event.revision_id}")
+            return
+        self._on_event(event)
 
     def _submit_record(self, work: Callable[[], None]) -> None:
         self._submit(self._record_executor, work, "recording revisions")

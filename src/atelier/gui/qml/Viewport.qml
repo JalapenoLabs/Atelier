@@ -423,6 +423,6 @@ Item {
         visible: running
         running: viewport.isPrimary
                  ? !viewport.hasModel && studio.selectedExport !== "" && studio.conversionState === "running"
-                 : !viewport.hasModel
+                 : !viewport.hasModel && viewport.visible
     }
 }
