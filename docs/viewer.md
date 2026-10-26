@@ -5,7 +5,8 @@ daemon (`atelierd`, see `architecture.md`).
 
 ```
 uv run atelier                                      # reopens the last project
-uv run atelier --project AnchorFall                 # a known project by name, or any project folder by path
+uv run atelier --project /path/to/Project          # open any project folder by its path
+uv run atelier --project Project                   # shortcut: the name of a project opened before on this machine
 uv run atelier --socket <path>                      # a daemon on another socket than $XDG_RUNTIME_DIR/atelier.sock
 uv run atelier --project <path> --state-root <dir>  # a daemon the window starts keeps state in <dir>/<name>/
 ```
