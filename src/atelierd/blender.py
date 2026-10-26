@@ -1,14 +1,15 @@
 """Running a Python script in headless Blender.
 
-Every headless Blender job the daemon owns goes through `run_blender_script`: converting exports for the viewer today,
-standard renders next. It runs Blender with factory settings (so no user add-on or preference can change a result),
+Every headless Blender job the daemon owns goes through `run_blender_script`: converting exports for the viewer and
+rendering standard views. It runs Blender with factory settings (so no user add-on or preference can change a result),
 at a lower priority, with a timeout, and turns any failure into a `BlenderError` carrying the end of Blender's log.
 
 Blender built against the system Python (the Arch package) resolves its standard library from the first `python3` on
 `PATH`. Any other Python found first, such as mise's or this very virtual environment's under `uv run`, gives it the
 wrong standard library and site-packages: `math` or numpy fail to import and the FBX importer breaks. The job's
 environment therefore keeps on `PATH` only folders without a `python3`, plus Blender's own folder, and drops the
-variables that point Python elsewhere.
+variables that point Python elsewhere. Every other Blender Atelier starts (a worker's background Blender, Show in
+Blender) runs in the same `blender_environment()`.
 """
 
 from __future__ import annotations
@@ -58,8 +59,9 @@ def run_blender_script(script: Path, script_arguments: list[str], timeout_s: flo
     """
     blender = find_blender()
     command = [
-        # `nice` rather than a preexec hook, which is unsafe in a process that runs threads (the GUI does).
-        "nice",
+        # `nice` rather than a preexec hook, which is unsafe in a process that runs threads (the GUI does). Found here,
+        # because Blender's cleaned PATH may no longer hold the folder it lives in.
+        shutil.which("nice") or "nice",
         "-n",
         str(BLENDER_NICENESS),
         blender,
@@ -78,7 +80,7 @@ def run_blender_script(script: Path, script_arguments: list[str], timeout_s: flo
     try:
         completed = subprocess.run(
             command,
-            env=_blender_environment(Path(blender).parent),
+            env=blender_environment(Path(blender).parent),
             capture_output=True,
             text=True,
             timeout=timeout_s,
@@ -94,7 +96,7 @@ def run_blender_script(script: Path, script_arguments: list[str], timeout_s: flo
     return output
 
 
-def _blender_environment(blender_folder: Path) -> dict[str, str]:
+def blender_environment(blender_folder: Path) -> dict[str, str]:
     """Return this process's environment cleared of every other Python installation (see the module docstring)."""
     path_entries = os.environ.get("PATH", "").split(os.pathsep)
     kept_entries = [

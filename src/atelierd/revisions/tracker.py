@@ -6,9 +6,10 @@ priority, so renders never crowd out the machine. Everything it finishes is repo
 those threads.
 
 It is fed by the catalog watcher's settled changes (`handle_catalog_event`), and called directly by whatever else
-changes a source: a worker turn ends (`record`), or a reviewer restores (`restore`). The window asks it for the
-renders of whatever it shows that has none yet (`request_standard_renders`), which is how a baseline's exports get
-rendered.
+changes a source: a worker turn ends (`record`), or a reviewer restores (`restore`). Changes that settle while a worker
+turn runs on a source are left to the revision that turn records when it ends, so a turn is one revision. The window
+asks it for the renders of whatever it shows that has none yet (`request_standard_renders`), which is how a
+baseline's exports get rendered.
 """
 
 from __future__ import annotations
@@ -135,6 +136,10 @@ class RevisionTracker:
             self._after_recording(revision)
 
     def _record_in_background(self, source_path: str) -> None:
+        if self.revisions.is_source_busy(source_path):
+            # A worker turn is writing it; the turn's own revision, recorded when it ends, holds these changes.
+            logger.debug(f"[Tracker] {source_path} has a worker turn running, leaving its changes to that turn")
+            return
         try:
             self.record(source_path, RevisionTrigger.CHANGE)
         except KeyError:

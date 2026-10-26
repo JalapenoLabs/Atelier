@@ -6,7 +6,8 @@ with `PRAGMA user_version` and grown by appending to `_MIGRATIONS`, never by edi
 A source whose `.blend` disappears is marked missing rather than deleted. Its status and revisions survive a file that
 is briefly gone during a save or a move and comes back.
 
-The revision tables (migration 3) are read and written by `atelierd.revisions.store`, over the same connection setup.
+The revision tables (migration 3) are read and written by `atelierd.revisions.store`, and the worker tables (migration
+4: sessions, feedback, pinned references) by `atelierd.workers.store`, over the same connection setup.
 
 A `sqlite3.Connection` may only be used by the thread that opened it, so each thread opens its own `CatalogStore`.
 """
@@ -119,6 +120,38 @@ _MIGRATIONS: tuple[tuple[str, ...], ...] = (
             source_id INTEGER PRIMARY KEY REFERENCES sources (id) ON DELETE CASCADE,
             revision_id INTEGER NOT NULL REFERENCES revisions (id) ON DELETE CASCADE,
             restored_at TEXT NOT NULL
+        )
+        """,
+    ),
+    (
+        # Every Claude Code session a worker ran on a source; the newest is the one the composer continues.
+        """
+        CREATE TABLE worker_sessions (
+            session_id TEXT PRIMARY KEY,
+            source_id INTEGER NOT NULL REFERENCES sources (id) ON DELETE CASCADE,
+            started_at TEXT NOT NULL,
+            last_turn_at TEXT
+        )
+        """,
+        "CREATE INDEX worker_sessions_by_source ON worker_sessions (source_id, started_at)",
+        # Markup sent as feedback; its images and strokes live in `<state>/feedback/<source>/<id>/`.
+        """
+        CREATE TABLE feedback (
+            id INTEGER PRIMARY KEY,
+            source_id INTEGER NOT NULL REFERENCES sources (id) ON DELETE CASCADE,
+            revision_id INTEGER REFERENCES revisions (id) ON DELETE SET NULL,
+            export TEXT,
+            created_at TEXT NOT NULL,
+            pins TEXT NOT NULL,
+            camera TEXT
+        )
+        """,
+        # References pinned to a source's next worker prompt, cleared once a turn has carried them.
+        """
+        CREATE TABLE pinned_references (
+            source_id INTEGER NOT NULL REFERENCES sources (id) ON DELETE CASCADE,
+            path TEXT NOT NULL,
+            PRIMARY KEY (source_id, path)
         )
         """,
     ),

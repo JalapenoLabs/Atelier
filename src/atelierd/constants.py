@@ -90,3 +90,47 @@ BLENDER_TIMEOUT_S = 300
 STANDARD_RENDER_WORKERS = 2
 # Revisions per source `atelier prune` keeps unless told otherwise.
 DEFAULT_PRUNE_KEEP = 20
+
+# ========================================================================================
+# The daemon and its front doors
+# ========================================================================================
+
+# The GUI's JSON-RPC socket, inside `$XDG_RUNTIME_DIR`; `ATELIER_SOCKET` (or `--socket`) puts it elsewhere.
+SOCKET_FILE_NAME = "atelier.sock"
+SOCKET_PATH_ENV = "ATELIER_SOCKET"
+# The HTTP front door on 127.0.0.1: the worker-side MCP each worker calls, and the manager MCP.
+DEFAULT_HTTP_PORT = 47817
+# The systemd user unit `atelierd install` writes; the GUI starts the daemon through it when it is installed.
+SYSTEMD_UNIT_NAME = "atelierd.service"
+# Where a daemon the GUI starts by itself (no unit installed) writes its log, inside `$XDG_STATE_HOME`.
+DAEMON_LOG_FILE_NAME = "atelierd.log"
+
+# ========================================================================================
+# Workers
+# ========================================================================================
+
+# The Claude Code CLI a worker runs, and the Blender MCP client its `blender` server runs; both can be overridden
+# with a path, which is also how the tests substitute stubs.
+CLAUDE_COMMAND = "claude"
+CLAUDE_COMMAND_ENV = "ATELIER_CLAUDE"
+BLENDER_MCP_COMMAND = "blender-mcp"
+BLENDER_MCP_COMMAND_ENV = "ATELIER_BLENDER_MCP"
+# A worker's background Blender renders on this many threads, so several workers never take the whole machine.
+WORKER_BLENDER_THREADS = 4
+# How long a worker waits for its background Blender to start listening before the turn fails.
+WORKER_BLENDER_START_TIMEOUT_S = 60
+# How long a stopping worker's processes get to exit on their own before they are killed.
+WORKER_STOP_TIMEOUT_S = 10
+# The worker-side MCP server's name in each worker's `--mcp-config`, and so the prefix of its tools.
+WORKER_MCP_SERVER_NAME = "atelier"
+WORKER_BLENDER_SERVER_NAME = "blender"
+WORKER_APPROVAL_TOOL = "approve"
+# The header carrying a worker's secret token on every call it makes to the worker-side MCP.
+WORKER_TOKEN_HEADER = "X-Atelier-Worker"
+# The Unreal content tree; anything under it escalates (see docs/workers.md).
+UNREAL_CONTENT_FOLDER = "Content"
+
+# Folders inside a project's state folder, beside `objects/`, `renders/` and `cache/`.
+WORKERS_DIR_NAME = "workers"
+TRANSCRIPTS_DIR_NAME = "transcripts"
+FEEDBACK_DIR_NAME = "feedback"
