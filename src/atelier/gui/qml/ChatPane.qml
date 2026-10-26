@@ -286,7 +286,7 @@ Item {
 
                     Label {
                         horizontalAlignment: Text.AlignHCenter
-                        text: entry.kind === "result" ? "— " + entry.text + " · " + entry.time + " —" : entry.text
+                        text: entry.kind === "result" ? entry.text + " · " + entry.time : entry.text
                         wrapMode: Text.Wrap
                         color: entry.is_error ? Theme.statusColor("changes-requested") : Theme.textDim
                         font.pixelSize: Theme.fontSmall

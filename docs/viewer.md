@@ -1,30 +1,35 @@
 # Viewer
 
-The desktop app, `atelier` with no command. It is a PySide6 / Qt Quick window over the catalog.
+The desktop app, `atelier` with no command. It is a PySide6 / Qt Quick window over the catalog, a client of the
+daemon (`atelierd`, see `architecture.md`).
 
 ```
 uv run atelier                                      # reopens the last project
 uv run atelier --project AnchorFall                 # a known project by name, or any project folder by path
-uv run atelier --project <path> --state-root <dir>  # keep every project's state in <dir>/<name>/, not in the project
+uv run atelier --socket <path>                      # a daemon on another socket than $XDG_RUNTIME_DIR/atelier.sock
+uv run atelier --project <path> --state-root <dir>  # a daemon the window starts keeps state in <dir>/<name>/
 ```
+
+Until the daemon answers, the window shows a page saying so, with **Start atelierd** and **Try again**.
 
 ## Window
 
 A three-pane studio:
 
 ```
-┌ Atelier  AnchorFall ▾  status message ──────────────────────────────────────────────────┐
+┌ Atelier  AnchorFall ▾  status message ────────────────────────────────────── [2 approvals] ┐
 │ Sources      │ Carbine [In review ▾]          Export [SK_Carbine ▾] │ [Chat] [Refs] [README] │
 │ filter…      │  ┌ stats ┐               [Studio Clay … Views ▾]     │                        │
-│ All statuses │  │ 3D viewport, a render, or compare               │ │ references rail,       │
-│ ▾ Weapons    │  └────────────────────────────────────────────────┘ │ drop images here       │
+│ All statuses │  │ 3D viewport, a render, compare, or markup       │ │ worker chat, composer  │
+│ ▾ Weapons    │  └────────────────────────────────────────────────┘ │                        │
 │   ● Carbine  │  render gallery: standard renders, then by stem      │                        │
 │              │  revision filmstrip     [Newest] [Compare] [Restore] │                        │
 └──────────────┴──────────────────────────────────────────────────────┴────────────────────────┘
 ```
 
-- **Header**: the project picker (every project in the machine's registry) and the latest status message. The
-  approvals badge for worker tool calls joins it with workers (see `workers.md`).
+- **Header**: the project picker (every project in the machine's registry), the latest status message, and the
+  approvals badge: every project's worker tool calls waiting for you, listed as approval cards in its popup
+  (see `workers.md`).
 - **Sources** (left): the catalog as a tree mirroring the folders, each source with its status colour and export
   count. A top folder every source shares (`SourceArt/`) is left out, and a folder holding only a source of its own
   name (`Carbine/Carbine.blend`) shows as that source. Filters by text (anywhere in the path) and by status; while
@@ -32,8 +37,8 @@ A three-pane studio:
 - **Stage** (centre): the selected source's name, its status (settable here) and the export picker, over the 3D
   viewport, a render full size, or two revisions compared side by side, with the render gallery and the revision
   filmstrip under it (see `revisions.md`).
-- **Context** (right): tabs for the source's worker chat (a placeholder until workers), the references rail, and its
-  README rendered as Markdown.
+- **Context** (right): tabs for the source's worker chat (see `workers.md`), the references rail, and its README
+  rendered as Markdown.
 
 Panel sizes, the selected tab, the last project and the viewport's display settings are remembered per machine, in
 Qt's settings (`~/.config/JalapenoLabs/Atelier.conf`). Everything else the window shows comes from the core.
@@ -120,7 +125,8 @@ source, grouped by **stem**, each group labelled. A render's stem is the longest
 for a fixed list of view words, so the groups come from the set itself.
 
 Clicking a render shows it full size on the stage; **3D view** goes back. A source with renders but no exports opens
-on its first render. Markup of a render or a frozen viewport frame joins with workers (see `workers.md`).
+on its first render. **Mark up**, on a render shown full size or on the viewport's toolbar, opens the stage's markup
+editor (its fifth page) on the render or a frozen frame of the viewport (see `workers.md`).
 
 ## Revision filmstrip
 
@@ -134,29 +140,33 @@ compare state and the stage viewport instead of the studio, with their orbits ke
 The **Refs** tab lists every reference image of the project (see `catalog.md`), tagged by folder. Dropping image files
 onto it copies them into `references.drop_folder` and rescans, so they appear at once. A file of the same name already
 there is never overwritten: the same image is not copied again, and a different one gets the next free name
-(`concept-2.png`).
+(`concept-2.png`). With a source selected, **Pin** on an image pins it to that source's next worker prompt.
 
 ## Between the window and the core
 
-The window reaches the core through exactly one interface, `atelier.gui.backend.StudioBackend`: open a project and
-follow its changes (catalog and revision events on one stream), list sources and references, set a status, keep
-bookmarks, add a reference, convert an export, read a source's revision history, ask for standard renders, convert a
-revision's export, and restore. It speaks only in core models and project-relative paths, plus absolute paths into the
-state folder (converted models, standard renders, objects). Today `InProcessBackend` runs the catalog and the
-`RevisionTracker` in the app's process and its watcher on a thread; the daemon's RPC client will implement the same protocol, so moving to the daemon changes
-that one module. Images and models are read straight from disk by path either way.
+The window reaches the core through exactly one interface, `atelier.gui.backend.StudioBackend`: reach the daemon and
+follow its events (the open project's catalog changes, revisions and worker output, every project's approvals, and
+losing the daemon, on one stream), open a project, list sources and references, set a status, keep bookmarks, add a
+reference, convert an export, read a source's revision history, ask for standard renders, convert a revision's
+export, restore, drive a source's worker, pin references, store feedback and answer approvals. It speaks only in core
+models and project-relative paths, plus absolute paths into the state folder (converted models, standard renders,
+objects, transcript and feedback images). `RpcBackend` implements it over the daemon's socket (see
+`architecture.md`). Images and models are read straight from disk by path, never sent over the socket.
 
-Above it, `atelier.gui.studio.Studio` is the view-model QML binds to (the selection, the filter, the load path, the
-staged revision and compare), and plain functions build the tree (`gui/tree.py`), the gallery groups
-(`gui/gallery.py`) and the filmstrip rows (`gui/revisions.py`). Backend calls run off the UI
-thread through `gui/tasks.py`: catalog work in order on one thread, conversions on their own.
+Above it, `atelier.gui.studio.Studio` is the view-model QML binds to (the daemon's state, the selection, the filter,
+the load path, the staged revision and compare, the approvals list), with `gui/chat.py` (the selected source's worker
+and chat) and `gui/markup.py` (the markup editor, and flattening markup onto its image) beside it, and plain
+functions build the tree (`gui/tree.py`), the gallery groups (`gui/gallery.py`) and the filmstrip rows
+(`gui/revisions.py`). Backend calls run off the UI thread through `gui/tasks.py`: catalog work in order on one
+thread, conversions on their own. Show in Blender is the window's own (`gui/desktop.py`).
 
 ## Development
 
 `atelier --project <p> --source <path> --screenshot <out.png>` renders the window once and quits (also `--export`,
 `--render`, `--lighting clay`, `--wireframe`, `--collision`, `--direct`, `--frame figure`, `--tab`, `--window-size`,
-and for revisions `--revision <n>`, `--compare renders|models`, `--compare-base <n>`, `--compare-view <view>`; none
-of these are in `--help`). Qt's `offscreen` platform has no 3D graphics API, so Quick 3D draws nothing there; by
+for revisions `--revision <n>`, `--compare renders|models`, `--compare-base <n>`, `--compare-view <view>`, and for
+markup `--markup` with `--render <name>` and `--markup-file <markup.json>`; none of these are in `--help`). It needs a
+running daemon; `--tab chat` waits for the source's chat. Qt's `offscreen` platform has no 3D graphics API, so Quick 3D draws nothing there; by
 default the window stays hidden on the normal platform and is grabbed offscreen. A hidden window renders no frames,
 so images inside the gallery and the rail mostly never arrive, and only its first grab is reliable. For a faithful
 screenshot add `--screenshot-shown` and launch it where it cannot be seen, such as a silent Hyprland special
@@ -167,4 +177,4 @@ hyprctl eval "hl.exec_cmd('<command>', { workspace = 'special:atelier silent', f
 ```
 
 The tests run on `offscreen` without a display: the view-model against a fake backend, the tree and gallery
-functions, and a check that every QML file loads without a warning.
+functions, and a check that every QML file loads without a warning against a real daemon run in the test process.
