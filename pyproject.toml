@@ -1,0 +1,59 @@
+[project]
+name = "atelier"
+version = "0.1.0"
+description = "A native review studio for AI-built 3D art."
+readme = "README.md"
+requires-python = "==3.14.7"
+dependencies = [
+    "pydantic==2.14.1",
+    "tomli-w==1.2.0",
+    "watchfiles==1.3.0",
+    "wcmatch==11.1",
+]
+
+[project.scripts]
+atelier = "atelier.cli:main"
+
+[dependency-groups]
+dev = [
+    "mypy==2.4.0",
+    "pytest==9.1.1",
+    "ruff==0.17.0",
+]
+
+[build-system]
+requires = ["uv_build==0.12.13"]
+build-backend = "uv_build"
+
+[tool.uv]
+required-version = "==0.12.13"
+
+[tool.uv.build-backend]
+module-name = ["atelier", "atelierd"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py314"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "D", "B", "UP"]
+# Constructors and context-manager dunders are documented by their class docstring.
+ignore = ["D105", "D107"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.isort]
+known-first-party = ["atelier", "atelierd"]
+
+[tool.ruff.lint.per-file-ignores]
+# Test names say what each test proves; docstrings would only repeat them.
+"tests/**" = ["D1"]
+
+[tool.mypy]
+strict = true
+python_version = "3.14"
+plugins = ["pydantic.mypy"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

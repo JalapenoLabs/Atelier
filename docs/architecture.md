@@ -42,14 +42,36 @@ guarantee.
 | `<project>/.atelier/cache/`             | Converted `.glb` files, keyed by source content hash         |
 | `~/.local/share/atelier/projects.toml`  | The machine's registry of known projects                     |
 
-Per-project state travels with the project's drive and never mixes facts from two projects. `.atelier/` is added to
-the project's `.dvignore` (or `.gitignore`): it is review state, not source, and committing it would turn every click
-into a version-control change.
+Per-project state travels with the project's drive and never mixes facts from two projects, so every path stored in
+`state.db` is project-relative. `.atelier/` is added to every ignore file the project has (`.dvignore`, `.gitignore`),
+or to a new one for the version control it uses (`.diversion/` or `.git/`): it is review state, not source, and
+committing it would turn every click into a version-control change.
+
+`state.db` is versioned with `PRAGMA user_version`. Each part of the daemon adds its tables as a new migration; an
+applied migration is never edited.
+
+The registry lives under `$XDG_DATA_HOME` (default `~/.local/share`). It maps each project's folder name to its path,
+so a project scanned once by path can be named from anywhere. It holds no per-project state.
 
 ## Stack
 
-- Python, pinned and managed with `uv` (`pyproject.toml` plus `uv.lock`).
+- Python 3.14, pinned exactly and managed with `uv` (`pyproject.toml` plus `uv.lock`, `.python-version`). Every
+  dependency and tool is pinned to an exact version: pydantic for every model and config, `wcmatch` for the `**` and
+  `{a,b}` globs in `atelier.toml`, `watchfiles` for the file watcher, `tomli-w` for writing the registry; ruff, mypy
+  (strict) and pytest for checks, run in CI by `.github/workflows/ci.yml`.
 - PySide6 with Qt Quick and Qt Quick 3D for the GUI. All rendering runs in Qt's native RHI (Vulkan on Linux), so Python
   costs nothing in viewport speed. Python matches the `bpy` builder scripts the projects already use.
 - Blender, headless, for conversion and standard renders, plus one background instance per worker.
 - The Claude Code CLI, run as a child process with the host's own login. Atelier never calls the Anthropic API itself.
+
+## Code layout
+
+One `uv` project, two import packages under `src/`:
+
+| Package    | Holds                                                                                          |
+|------------|------------------------------------------------------------------------------------------------|
+| `atelierd` | The core: `config` (`atelier.toml`), `registry`, `project` (paths, state folder, ignore entry), `catalog` (discovery, references, `state.db` store, the `Catalog` service, the watcher). The daemon, its RPC and the manager MCP adapter join it here. |
+| `atelier`  | Front ends: the `atelier` command line (`atelier.cli`), and the desktop app beside it.         |
+
+`atelier` imports `atelierd`; `atelierd` never imports `atelier`. The core neither prints nor parses arguments: its
+functions take paths and models and return pydantic models, which is what keeps the CLI, the RPC and the MCP thin.
