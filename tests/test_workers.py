@@ -183,6 +183,14 @@ class TestTurns:
 
 
 class TestSessions:
+    def test_each_turn_shows_its_own_cost(self, session: Session) -> None:
+        session.prompt("SAY one")
+        session.wait_idle()
+        session.prompt("SAY two")
+        snapshot = session.wait_idle(results=2)
+        results = [item.text for item in snapshot.items if item.kind is ChatItemKind.RESULT]
+        assert [result.split(", ")[-1] for result in results] == ["$0.25", "$0.25"]
+
     def test_a_restarted_worker_resumes_its_session(self, session: Session, tmp_path: Path) -> None:
         session.prompt("SAY one")
         first = session.wait_idle()

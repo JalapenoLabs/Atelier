@@ -54,8 +54,9 @@ def read_stdin(messages: queue.Queue[Message]) -> None:
 
 
 class Turn:
-    def __init__(self, session_id: str, messages: queue.Queue[Message]) -> None:
+    def __init__(self, session_id: str, messages: queue.Queue[Message], process_cost_usd: float) -> None:
         self.session_id = session_id
+        self.process_cost_usd = process_cost_usd
         self.messages = messages
         self.is_interrupted = False
         mcp_path = argument_after("--mcp-config")
@@ -154,7 +155,9 @@ class Turn:
                 break
         subtype = "error_during_execution" if self.is_interrupted else "success"
         result = {"type": "result", "subtype": subtype, "is_error": self.is_interrupted, "duration_ms": 10}
-        emit({**result, "total_cost_usd": 0, "session_id": self.session_id})
+        # Like Claude Code, the cost of the whole process so far: every turn here costs $0.25.
+        self.process_cost_usd += 0.25
+        emit({**result, "total_cost_usd": self.process_cost_usd, "session_id": self.session_id})
 
     def write(self, path: str, content: str) -> None:
         def run() -> ToolOutcome:
@@ -185,6 +188,7 @@ def main() -> int:
     messages: queue.Queue[Message] = queue.Queue()
     threading.Thread(target=read_stdin, args=(messages,), daemon=True).start()
     is_started = False
+    process_cost_usd = 0.0
     while True:
         message = messages.get()
         if message is None:
@@ -196,7 +200,9 @@ def main() -> int:
             emit({"type": "system", "subtype": "init", "session_id": session_id})
         text = message["message"]["content"][0]["text"]
         # The brief comes first; the reviewer's words (the script) are the last paragraph.
-        Turn(session_id, messages).run(text.split("\n\n")[-1])
+        turn = Turn(session_id, messages, process_cost_usd)
+        turn.run(text.split("\n\n")[-1])
+        process_cost_usd = turn.process_cost_usd
 
 
 if __name__ == "__main__":

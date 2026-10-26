@@ -115,6 +115,8 @@ class Worker:
         self._blender_port: int | None = None
         self._is_interrupt_requested = False
         self._is_finishing = False
+        # What the running Claude Code process has reported spending so far.
+        self._process_cost_usd = 0.0
 
         with WorkerStore(project.database_path) as store:
             sessions = store.list_sessions(source_path)
@@ -392,6 +394,7 @@ class Worker:
 
             claude = ClaudeProcess(command, self.project.root, self._on_claude_event, on_exit)
             self._claude = claude
+            self._process_cost_usd = 0.0
             return claude
 
     def _on_claude_event(self, event: dict[str, Any]) -> None:
@@ -425,7 +428,11 @@ class Worker:
         with self._lock:
             was_interrupted = self._is_interrupt_requested
         seconds = float(event.get("duration_ms") or 0) / 1000
-        cost = float(event.get("total_cost_usd") or 0)
+        # Claude Code reports the cost of its whole process so far, so a turn's own cost is what it added.
+        process_cost = float(event.get("total_cost_usd") or 0)
+        with self._lock:
+            cost = max(0.0, process_cost - self._process_cost_usd)
+            self._process_cost_usd = process_cost
         if was_interrupted:
             summary = "Interrupted"
         elif is_error:

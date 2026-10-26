@@ -109,34 +109,33 @@ Rectangle {
                         drawStroke(context, stroke.tool, stroke.color, stroke.points)
                     drawStroke(context, editor.markup.tool, editor.markup.color, editor.draft)
                 }
-            }
 
-            // Pins are items rather than paint, so they stay crisp and can be told apart.
-            Repeater {
-                model: editor.markup.pinRows
+                // Pins are items rather than paint, so they stay crisp and can be told apart.
+                Repeater {
+                    model: editor.markup.pinRows
 
-                Rectangle {
-                    required property int number
-                    required property real position_x
-                    required property real position_y
-                    readonly property real pinRadius: Math.max(10, 0.016 * Math.max(image.paintedWidth, image.paintedHeight))
-                    readonly property var centre: canvas.toCanvas([position_x, position_y])
-                    parent: canvas
-                    x: centre[0] - pinRadius
-                    y: centre[1] - pinRadius
-                    width: pinRadius * 2
-                    height: pinRadius * 2
-                    radius: pinRadius
-                    color: editor.markup.pinColor
-                    border.color: "#ffffff"
-                    border.width: Math.max(1.5, pinRadius * 0.18)
+                    Rectangle {
+                        required property int number
+                        required property real position_x
+                        required property real position_y
+                        readonly property real pinRadius: Math.max(10, 0.016 * Math.max(image.paintedWidth, image.paintedHeight))
+                        readonly property var centre: canvas.toCanvas([position_x, position_y])
+                        x: centre[0] - pinRadius
+                        y: centre[1] - pinRadius
+                        width: pinRadius * 2
+                        height: pinRadius * 2
+                        radius: pinRadius
+                        color: editor.markup.pinColor
+                        border.color: "#ffffff"
+                        border.width: Math.max(1.5, pinRadius * 0.18)
 
-                    Label {
-                        anchors.centerIn: parent
-                        text: parent.number
-                        color: "#ffffff"
-                        font.bold: true
-                        font.pixelSize: parent.pinRadius * 1.2
+                        Label {
+                            anchors.centerIn: parent
+                            text: parent.number
+                            color: "#ffffff"
+                            font.bold: true
+                            font.pixelSize: parent.pinRadius * 1.2
+                        }
                     }
                 }
             }
@@ -289,6 +288,8 @@ Rectangle {
                             text: note
                             placeholderText: "What should change here?"
                             onTextEdited: editor.markup.setPinNote(number, text)
+                            // Show a long note from its start, not scrolled to its end.
+                            Component.onCompleted: cursorPosition = 0
                         }
                     }
 

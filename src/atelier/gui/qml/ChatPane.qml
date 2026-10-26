@@ -100,12 +100,16 @@ Item {
             bottomMargin: 8
             model: chatPane.chat.rows
             boundsBehavior: Flickable.StopAtBounds
-            ScrollBar.vertical: ScrollBar {}
+            // Rows come newest first and are drawn from the bottom up, so the newest sits exactly at the bottom.
+            verticalLayoutDirection: ListView.BottomToTop
+            ScrollBar.vertical: ScrollBar {
+                onPressedChanged: if (!pressed) transcript.isAtNewest = transcript.atYEnd
+            }
 
-            property bool isStuckToEnd: true
-            onMovementEnded: isStuckToEnd = atYEnd
-            onCountChanged: if (isStuckToEnd) Qt.callLater(positionViewAtEnd)
-            onContentHeightChanged: if (isStuckToEnd) Qt.callLater(positionViewAtEnd)
+            // Follow the newest while the chat streams, unless the reviewer scrolled up to read.
+            property bool isAtNewest: true
+            onMovementEnded: isAtNewest = atYEnd
+            onCountChanged: if (isAtNewest) Qt.callLater(positionViewAtBeginning)
 
             delegate: Item {
                 id: entry

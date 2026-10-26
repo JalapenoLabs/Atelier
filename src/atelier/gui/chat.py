@@ -2,12 +2,13 @@
 
 The chat follows the daemon. Selecting a source loads its worker's snapshot (its state and the whole session so far),
 and from then on every `WorkerEvent` for that source adds or updates one row in place: a tool call gains its result,
-an approval card its answer. Rows keep their order by the transcript's index, so a late snapshot and the events that
-crossed it agree.
+an approval card its answer. Rows are kept newest first, by the transcript's index, so a late snapshot and the events
+that crossed it agree; the chat's list draws them bottom to top, which keeps the newest exactly at the bottom.
 """
 
 from __future__ import annotations
 
+import bisect
 import logging
 from collections.abc import Callable
 from datetime import datetime
@@ -107,8 +108,8 @@ class Chat(QObject):
         self._info: WorkerInfo | None = None
         self._session_count = 0
         self._rows = RowListModel(ChatRow)
-        # Row position of each transcript index, to update an item in place.
-        self._position_by_index: dict[int, int] = {}
+        # The transcript index of every row, ascending; row 0 is the newest, so a row's position counts down.
+        self._indices: list[int] = []
 
     # ####################### #
     #       PROPERTIES        #
@@ -200,16 +201,18 @@ class Chat(QObject):
         self.loaded.emit()
 
     def _set_rows(self, items: list[ChatItem]) -> None:
-        self._position_by_index = {item.index: position for position, item in enumerate(items)}
-        self._rows.set_rows([chat_row(item) for item in items])
+        ordered = sorted(items, key=lambda item: item.index)
+        self._indices = [item.index for item in ordered]
+        self._rows.set_rows([chat_row(item) for item in reversed(ordered)])
 
     def _upsert(self, item: ChatItem) -> None:
-        position = self._position_by_index.get(item.index)
-        if position is None:
-            self._position_by_index[item.index] = len(self._rows.rows)
-            self._rows.append_row(chat_row(item))
-        else:
-            self._rows.replace_row(position, chat_row(item))
+        slot = bisect.bisect_left(self._indices, item.index)
+        is_known = slot < len(self._indices) and self._indices[slot] == item.index
+        if is_known:
+            self._rows.replace_row(len(self._indices) - 1 - slot, chat_row(item))
+            return
+        self._indices.insert(slot, item.index)
+        self._rows.insert_row(len(self._indices) - 1 - slot, chat_row(item))
 
     # ####################### #
     #         ACTIONS         #

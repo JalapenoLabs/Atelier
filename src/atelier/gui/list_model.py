@@ -34,11 +34,10 @@ class RowListModel(QAbstractListModel):
         self.endResetModel()
         self.countChanged.emit()
 
-    def append_row(self, row: BaseModel) -> None:
-        """Add one row at the end, leaving the others (and a view's scroll position) as they are."""
-        position = len(self._rows)
+    def insert_row(self, position: int, row: BaseModel) -> None:
+        """Add one row at `position`, leaving the others as they are."""
         self.beginInsertRows(QModelIndex(), position, position)
-        self._rows.append(row)
+        self._rows.insert(position, row)
         self.endInsertRows()
         self.countChanged.emit()
 

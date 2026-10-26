@@ -633,8 +633,9 @@ class TestChat:
 
         done = tool.model_copy(update={"is_done": True, "tool_output": "Saved"})
         backend.on_event(WorkerEvent(kind=WorkerEventKind.ITEM, source=CARBINE, info=running, item=done))
-        wait_until(lambda: chat.property("rows").rows[1].is_done)
-        assert len(chat.property("rows").rows) == 2
+        # Newest first: the list draws them bottom to top.
+        wait_until(lambda: chat.property("rows").rows[0].is_done)
+        assert [row.index for row in chat.property("rows").rows] == [1, 0]
 
         # Another source's worker does not touch this chat.
         other = WorkerInfo(source=POSTER, status=WorkerStatus.RUNNING)

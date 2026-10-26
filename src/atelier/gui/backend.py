@@ -225,7 +225,7 @@ class RpcBackend:
         # Every project's events: approvals from any of them light the badge; the rest are filtered in `_deliver`.
         client.call(protocol.SUBSCRIBE, protocol.SubscribeParams())
         info = client.call(protocol.DAEMON_INFO, protocol.NoParams())
-        if info.state_root != self._state_root:
+        if self._state_root is not None and info.state_root != self._state_root:
             logger.warning(
                 f"[Backend] The daemon on {self._socket_path} keeps state in {info.state_root or 'each project'}, "
                 f"not {self._state_root or 'each project'} as this window was started with"
