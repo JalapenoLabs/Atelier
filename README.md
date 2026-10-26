@@ -36,6 +36,23 @@ the daemon with `--state-root <folder outside it>` (for `scan`, `--state-dir`).
 
 Checks, as CI runs them: `uv run ruff format --check`, `uv run ruff check`, `uv run mypy src tests`, `uv run pytest`.
 
+## Connecting a manager
+
+With the daemon running, any Claude Code session on the machine can review and direct the work through the manager
+MCP at `http://127.0.0.1:47817/mcp` (or the daemon's `--http-port`):
+
+```
+claude mcp add --transport http atelier http://127.0.0.1:47817/mcp                # sessions in this folder
+claude mcp add --scope user --transport http atelier http://127.0.0.1:47817/mcp   # every session
+claude mcp list                                                                   # shows atelier as connected
+```
+
+Then ask it, for example, "find the DogTag charm in AnchorFall, look at its hero and side renders, and send its worker
+a critique". It can list and search sources, look at standard renders and compare revisions as images, read a
+worker's chat and your feedback, pin references, prompt and interrupt workers, and restore a revision. It cannot
+answer a worker's approval requests or set a source's status: those stay with you, in the window. Every tool is in
+[mcp.md](docs/mcp.md).
+
 ## Documentation
 
 | Doc                                      | Covers                                                        |

@@ -8,12 +8,10 @@ from __future__ import annotations
 
 import base64
 import json
-import time
-from collections.abc import Callable
 from pathlib import Path
 
 import pytest
-from conftest import RunningDaemon
+from conftest import RunningDaemon, wait_for
 
 from atelierd.revisions import RevisionTrigger, SourceBusyError
 from atelierd.rpc import protocol
@@ -36,17 +34,6 @@ DOG_TAG = "SourceArt/Weapons/Charms/DogTag/DogTag.blend"
 _PIXEL_PNG = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg=="
 )
-
-
-def wait_for[Value](read: Callable[[], Value], is_done: Callable[[Value], bool], timeout_s: float = 15) -> Value:
-    deadline = time.monotonic() + timeout_s
-    value = read()
-    while not is_done(value):
-        if time.monotonic() > deadline:
-            pytest.fail(f"Timed out waiting; last value: {value!r}")
-        time.sleep(0.05)
-        value = read()
-    return value
 
 
 class Session:

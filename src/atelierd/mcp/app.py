@@ -2,12 +2,17 @@
 
 - `/worker/mcp`: the worker-side `atelier` server (`worker.py`). Every request must carry a live worker's token in
   `X-Atelier-Worker`; anything else is refused before the MCP layer sees it, so the open port serves nobody else.
-- The manager MCP is to mount here too, at `/mcp`, beside the worker server and over the same core.
+- `/mcp`: the manager MCP (`manager.py`), for any Claude Code session on the machine. It needs no token: like the
+  window, it can only direct workers and read state, never answer an approval or sign a source off.
 
-The worker server is stateless and answers over SSE rather than with a plain JSON body: an approval can wait on the
-reviewer for hours, and a response whose first byte never comes is abandoned by Claude Code after about a minute,
-while an SSE response starts at once and is kept alive with pings. A mounted app's own lifespan never runs, so this
-app's lifespan runs every server's session manager.
+Both servers are stateless and answer over SSE rather than with a plain JSON body: an approval can wait on the
+reviewer for hours, and a manager can wait on a turn for many minutes, while Claude Code abandons a response whose
+first byte never comes after about a minute. An SSE response starts at once and is kept alive with pings. Both refuse
+a `Host` or `Origin` that is not loopback (the MCP SDK's DNS rebinding protection), so a web page cannot reach them.
+
+The manager app is mounted at the root, with its own route at `/mcp`, rather than mounted at `/mcp`: a mount at a
+path matches only below it, and `POST /mcp` would be redirected to `/mcp/`, which MCP clients do not follow. A
+mounted app's own lifespan never runs, so this app's lifespan runs every server's session manager.
 """
 
 from __future__ import annotations
@@ -23,6 +28,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from atelierd.constants import WORKER_TOKEN_HEADER
 from atelierd.daemon.core import AtelierCore
+from atelierd.mcp.manager import build_manager_mcp
 from atelierd.mcp.worker import build_worker_mcp, find_worker
 
 logger = logging.getLogger(__name__)
@@ -64,12 +70,23 @@ def build_http_app(core: AtelierCore) -> Starlette:
         stateless_http=True,
     )
 
+    manager_server = build_manager_mcp(core)
+    manager_app = manager_server.streamable_http_app(
+        streamable_http_path=MCP_PATH,
+        json_response=False,
+        stateless_http=True,
+    )
+
     @contextlib.asynccontextmanager
     async def lifespan(app: Starlette) -> AsyncIterator[None]:
-        async with worker_server.session_manager.run():
+        async with worker_server.session_manager.run(), manager_server.session_manager.run():
             yield
 
     return Starlette(
-        routes=[Mount(WORKER_MOUNT, app=_WorkerTokenGuard(worker_app, core))],
+        routes=[
+            Mount(WORKER_MOUNT, app=_WorkerTokenGuard(worker_app, core)),
+            # Last, so the worker mount is matched first; this app's one route is `/mcp`.
+            Mount("", app=manager_app),
+        ],
         lifespan=lifespan,
     )

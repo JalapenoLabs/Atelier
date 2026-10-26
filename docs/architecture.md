@@ -60,7 +60,7 @@ the way it would the core's. After `events.subscribe` (to one project or all), a
 notifications carrying the open projects' catalog changes, new revisions, worker output and approvals. Every call
 runs in a thread off the daemon's event loop, and core events, which arrive on the core's threads, are hopped onto
 the loop before they are written. The HTTP front door (`atelierd.mcp.app`) is one Starlette app served by uvicorn on
-the same loop; the manager MCP mounts there beside the worker server.
+the same loop; the manager MCP is served there beside the worker server.
 Images and models never travel over either front door to the GUI: daemon and GUI share a machine, so the GUI reads
 files straight from disk by path. MCP returns renders as image content, because a manager session has no disk access
 guarantee.
@@ -94,8 +94,9 @@ so a project scanned once by path can be named from anywhere. It holds no per-pr
 
 - Python 3.14, pinned exactly and managed with `uv` (`pyproject.toml` plus `uv.lock`, `.python-version`). Every
   dependency and tool is pinned to an exact version: pydantic for every model and config, `wcmatch` for the `**` and
-  `{a,b}` globs in `atelier.toml`, `watchfiles` for the file watcher, `tomli-w` for writing the registry; ruff, mypy
-  (strict) and pytest for checks, run in CI by `.github/workflows/ci.yml`.
+  `{a,b}` globs in `atelier.toml`, `watchfiles` for the file watcher, `tomli-w` for writing the registry, Pillow for
+  scaling and composing the renders the manager MCP returns; ruff, mypy (strict) and pytest for checks, run in CI by
+  `.github/workflows/ci.yml`.
 - PySide6 with Qt Quick and Qt Quick 3D for the GUI, as `pyside6-essentials` and `pyside6-addons` (Qt Quick 3D and
   its assimp importer live in the add-ons; the `pyside6` meta-package would also pull in WebEngine, which Atelier does
   not use). All rendering runs in Qt's native RHI (Vulkan on Linux), so Python
@@ -109,7 +110,7 @@ One `uv` project, two import packages under `src/`:
 
 | Package    | Holds                                                                                          |
 |------------|------------------------------------------------------------------------------------------------|
-| `atelierd` | The core: `config` (`atelier.toml`), `registry`, `project` (paths, state folder, ignore entry), `catalog` (discovery, references, `state.db` store, the `Catalog` service, the watcher), `blender` (running a script in headless Blender), `exports` (converting exports to `.glb` and measuring them, cached), `revisions` (the object store, revision manifests, standard renders, restore and prune, and the `RevisionTracker` that records and renders in the background), `workers` (the worker, its processes, the scope policy and its hook, approvals, transcripts, feedback and their `state.db` tables). The daemon: `daemon` (the core every front door calls, running it, the command line, the systemd unit), `rpc` (the GUI's front door: protocol, server, client) and `mcp` (the HTTP front door and the worker-side MCP server). |
+| `atelierd` | The core: `config` (`atelier.toml`), `registry`, `project` (paths, state folder, ignore entry), `catalog` (discovery, references, `state.db` store, the `Catalog` service, the watcher), `blender` (running a script in headless Blender), `exports` (converting exports to `.glb` and measuring them, cached), `revisions` (the object store, revision manifests, standard renders, restore and prune, and the `RevisionTracker` that records and renders in the background), `workers` (the worker, its processes, the scope policy and its hook, approvals, transcripts, feedback and their `state.db` tables). The daemon: `daemon` (the core every front door calls, running it, the command line, the systemd unit), `rpc` (the GUI's front door: protocol, server, client) and `mcp` (the HTTP front door, the worker-side MCP server, and the manager MCP with its image scaling). |
 | `atelier`  | Front ends: the `atelier` command line (`atelier.cli`: `scan`, `prune`), and the desktop app (`atelier.gui`: the backend interface and its RPC implementation, the `Studio` view-model with the chat and markup editor, and the QML in `gui/qml/`). |
 
 `atelier` imports `atelierd`; `atelierd` never imports `atelier`. The core neither prints nor parses arguments: its
