@@ -1,0 +1,3 @@
+# The room kit exports per room, outside its .blend's folder.
+[sources."SourceArt/Rooms/Rooms.blend"]
+outputs = ["SourceArt/Rooms/{Cabin,Pool}/**", "SourceArt/Rooms/Rooms_contact_sheet*.png"]

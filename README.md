@@ -14,6 +14,16 @@ anything. Its own state lives in a `.atelier/` folder inside the project, which 
 - **Manager MCP**: the daemon also serves MCP, so a managing Claude session can browse assets, look at renders and
   direct workers.
 
+## Running
+
+```
+uv sync
+uv run atelier scan /path/to/Project        # list every source with its exports and renders
+uv run atelier scan Project --watch         # by name once scanned, and keep the catalog live
+```
+
+Checks, as CI runs them: `uv run ruff format --check`, `uv run ruff check`, `uv run mypy src tests`, `uv run pytest`.
+
 ## Documentation
 
 | Doc                                      | Covers                                                        |
