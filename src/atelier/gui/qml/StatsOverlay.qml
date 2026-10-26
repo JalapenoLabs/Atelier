@@ -24,7 +24,6 @@ Rectangle {
     implicitHeight: column.implicitHeight + 14
     radius: 6
     color: Theme.overlay
-    visible: studio.selectedExport !== ""
 
     ColumnLayout {
         id: column

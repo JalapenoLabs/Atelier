@@ -3,8 +3,10 @@
 `state.db` is shared by every part of the daemon (catalog, revisions, feedback, sessions), so its schema is versioned
 with `PRAGMA user_version` and grown by appending to `_MIGRATIONS`, never by editing an applied migration.
 
-A source whose `.blend` disappears is marked missing rather than deleted. Its status, and in later versions its
-revisions and feedback, survive a file that is briefly gone during a save or a move and comes back.
+A source whose `.blend` disappears is marked missing rather than deleted. Its status and revisions survive a file that
+is briefly gone during a save or a move and comes back.
+
+The revision tables (migration 3) are read and written by `atelierd.revisions.store`, over the same connection setup.
 
 A `sqlite3.Connection` may only be used by the thread that opened it, so each thread opens its own `CatalogStore`.
 """
@@ -30,6 +32,10 @@ from atelierd.catalog.models import (
 logger = logging.getLogger(__name__)
 
 _STATUS_VALUES = ", ".join(f"'{status.value}'" for status in SourceStatus)
+# Written out rather than read from `atelierd.revisions`, which imports this module: an applied migration never changes
+# anyway, so a later trigger or kind needs a migration of its own.
+_TRIGGER_VALUES = "'baseline', 'change', 'worker-turn', 'pre-restore', 'restore'"
+_FILE_KIND_VALUES = "'blend', 'builder', 'readme', 'export', 'render'"
 
 # Each entry is one schema version: the statements that take the database from the previous version to it.
 _MIGRATIONS: tuple[tuple[str, ...], ...] = (
@@ -76,23 +82,91 @@ _MIGRATIONS: tuple[tuple[str, ...], ...] = (
         )
         """,
     ),
+    (
+        f"""
+        CREATE TABLE revisions (
+            id INTEGER PRIMARY KEY,
+            source_id INTEGER NOT NULL REFERENCES sources (id) ON DELETE CASCADE,
+            number INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            trigger TEXT NOT NULL CHECK (trigger IN ({_TRIGGER_VALUES})),
+            restored_from INTEGER REFERENCES revisions (id) ON DELETE SET NULL,
+            UNIQUE (source_id, number)
+        )
+        """,
+        f"""
+        CREATE TABLE revision_files (
+            revision_id INTEGER NOT NULL REFERENCES revisions (id) ON DELETE CASCADE,
+            path TEXT NOT NULL,
+            kind TEXT NOT NULL CHECK (kind IN ({_FILE_KIND_VALUES})),
+            sha256 TEXT NOT NULL,
+            size INTEGER NOT NULL,
+            PRIMARY KEY (revision_id, path)
+        )
+        """,
+        "CREATE INDEX revision_files_by_sha256 ON revision_files (sha256)",
+        # The last hash seen for each file, so an unchanged file (same size and modification time) is not read again.
+        """
+        CREATE TABLE file_hashes (
+            path TEXT PRIMARY KEY,
+            size INTEGER NOT NULL,
+            mtime_ns INTEGER NOT NULL,
+            sha256 TEXT NOT NULL
+        )
+        """,
+        """
+        CREATE TABLE restore_marks (
+            source_id INTEGER PRIMARY KEY REFERENCES sources (id) ON DELETE CASCADE,
+            revision_id INTEGER NOT NULL REFERENCES revisions (id) ON DELETE CASCADE,
+            restored_at TEXT NOT NULL
+        )
+        """,
+    ),
 )
 
 _SOURCE_COLUMNS = "id, path, builder, readme, has_output_override, status"
+
+
+def connect_state_database(database_path: Path) -> sqlite3.Connection:
+    """Open a project's `state.db` and bring its schema up to date. Every store over it opens it this way.
+
+    The connection is in autocommit mode, which leaves every transaction to an explicit `BEGIN IMMEDIATE ... COMMIT`.
+    """
+    database_path.parent.mkdir(parents=True, exist_ok=True)
+    connection = sqlite3.connect(database_path, autocommit=True)
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA journal_mode = WAL")
+    connection.execute("PRAGMA foreign_keys = ON")
+    connection.execute("PRAGMA busy_timeout = 5000")
+    _migrate(connection)
+    return connection
+
+
+def _migrate(connection: sqlite3.Connection) -> None:
+    """Bring the schema up to the newest version, one migration per transaction."""
+    current_version: int = connection.execute("PRAGMA user_version").fetchone()[0]
+    if current_version > len(_MIGRATIONS):
+        raise RuntimeError(f"state.db schema version {current_version} is newer than this Atelier ({len(_MIGRATIONS)})")
+
+    for version, statements in enumerate(_MIGRATIONS[current_version:], start=current_version + 1):
+        connection.execute("BEGIN IMMEDIATE")
+        try:
+            # executescript would COMMIT the open transaction first, so each statement runs on its own.
+            for statement in statements:
+                connection.execute(statement)
+            connection.execute(f"PRAGMA user_version = {version}")
+            connection.execute("COMMIT")
+        except BaseException:
+            connection.execute("ROLLBACK")
+            raise
+        logger.info(f"[Store] Migrated state.db to schema version {version}")
 
 
 class CatalogStore:
     """Read and write the catalog in one project's `state.db`."""
 
     def __init__(self, database_path: Path) -> None:
-        database_path.parent.mkdir(parents=True, exist_ok=True)
-        # autocommit=True leaves every transaction to an explicit BEGIN IMMEDIATE ... COMMIT below.
-        self._connection = sqlite3.connect(database_path, autocommit=True)
-        self._connection.row_factory = sqlite3.Row
-        self._connection.execute("PRAGMA journal_mode = WAL")
-        self._connection.execute("PRAGMA foreign_keys = ON")
-        self._connection.execute("PRAGMA busy_timeout = 5000")
-        self._migrate()
+        self._connection = connect_state_database(database_path)
 
     def __enter__(self) -> Self:
         return self
@@ -266,27 +340,6 @@ class CatalogStore:
     # -----------------------------------------------------------------------------
     # Internals
     # -----------------------------------------------------------------------------
-
-    def _migrate(self) -> None:
-        """Bring the schema up to the newest version, one migration per transaction."""
-        current_version: int = self._connection.execute("PRAGMA user_version").fetchone()[0]
-        if current_version > len(_MIGRATIONS):
-            raise RuntimeError(
-                f"state.db schema version {current_version} is newer than this Atelier ({len(_MIGRATIONS)})"
-            )
-
-        for version, statements in enumerate(_MIGRATIONS[current_version:], start=current_version + 1):
-            self._connection.execute("BEGIN IMMEDIATE")
-            try:
-                # executescript would COMMIT the open transaction first, so each statement runs on its own.
-                for statement in statements:
-                    self._connection.execute(statement)
-                self._connection.execute(f"PRAGMA user_version = {version}")
-                self._connection.execute("COMMIT")
-            except BaseException:
-                self._connection.execute("ROLLBACK")
-                raise
-            logger.info(f"[Store] Migrated state.db to schema version {version}")
 
     def _present_source_id(self, path: str) -> int:
         row = self._connection.execute(

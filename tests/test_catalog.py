@@ -31,7 +31,7 @@ class TestScan:
         database_path = catalog.project.root / ".atelier" / "state.db"
         with sqlite3.connect(database_path) as connection:
             assert connection.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
-            assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
+            assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
 
     def test_stored_catalog_matches_the_scan(self, catalog: Catalog) -> None:
         result = catalog.scan()

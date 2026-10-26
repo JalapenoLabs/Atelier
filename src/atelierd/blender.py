@@ -33,16 +33,20 @@ class BlenderError(Exception):
     """Blender is missing, failed, or did not finish in time."""
 
 
+class BlenderMissingError(BlenderError):
+    """No Blender is installed: a fact about the machine, not about the file it was asked to work on."""
+
+
 def find_blender() -> str:
     """Return the Blender executable, honouring `ATELIER_BLENDER`.
 
     Raises:
-        BlenderError: no such command is installed.
+        BlenderMissingError: no such command is installed.
     """
     command = os.environ.get(BLENDER_COMMAND_ENV) or BLENDER_COMMAND
     executable = shutil.which(command)
     if not executable:
-        raise BlenderError(f"Blender ('{command}') is not installed or not on PATH; set {BLENDER_COMMAND_ENV}")
+        raise BlenderMissingError(f"Blender ('{command}') is not installed or not on PATH; set {BLENDER_COMMAND_ENV}")
     return executable
 
 

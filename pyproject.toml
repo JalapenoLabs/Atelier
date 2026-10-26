@@ -59,7 +59,7 @@ plugins = ["pydantic.mypy"]
 
 # Blender scripts run inside Blender's own Python, where these modules exist; this environment has neither.
 [[tool.mypy.overrides]]
-module = ["bpy", "numpy"]
+module = ["bpy", "mathutils", "numpy"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

@@ -36,7 +36,7 @@ Rectangle {
         }
 
         Label {
-            text: decodeURIComponent(studio.stageImage.toString().split("/").pop())
+            text: studio.stageImageName
                   + (image.status === Image.Ready ? "   " + image.sourceSize.width + " × " + image.sourceSize.height : "")
             color: Theme.text
             font.pixelSize: Theme.fontSmall

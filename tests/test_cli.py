@@ -7,6 +7,8 @@ from pathlib import Path
 import pytest
 
 from atelier.cli import main
+from atelierd.project import open_project
+from atelierd.revisions import Revisions, RevisionTrigger
 
 
 @pytest.fixture(autouse=True)
@@ -72,3 +74,32 @@ class TestScanCommand:
     def test_an_unknown_project_is_reported(self, capsys: pytest.CaptureFixture[str]) -> None:
         assert main(["scan", "NoSuchProject"]) == 2
         assert "neither a folder nor a registered project" in capsys.readouterr().err
+
+
+class TestPruneCommand:
+    def test_keeps_the_newest_revisions(self, project_root: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        main(["scan", str(project_root)])
+        revisions = Revisions(open_project(project_root))
+        export = project_root / "SourceArt/Weapons/Carbine/Export/SK_Carbine.fbx"
+        for version in range(3):
+            export.write_bytes(f"mesh v{version}".encode())
+            revisions.record("SourceArt/Weapons/Carbine/Carbine.blend", RevisionTrigger.CHANGE)
+        capsys.readouterr()
+
+        assert main(["prune", str(project_root), "--keep", "1"]) == 0
+
+        assert "FixtureProject: removed 2 revisions, 2 objects" in capsys.readouterr().out
+        assert len(revisions.history("SourceArt/Weapons/Carbine/Carbine.blend").revisions) == 1
+
+    def test_a_project_without_state_is_reported(
+        self,
+        project_root: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        assert main(["prune", str(project_root)]) == 2
+        assert "nothing to prune" in capsys.readouterr().err
+
+    def test_keeping_nothing_is_refused(self, project_root: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        main(["scan", str(project_root)])
+        assert main(["prune", str(project_root), "--keep", "0"]) == 2
+        assert "at least one revision" in capsys.readouterr().err

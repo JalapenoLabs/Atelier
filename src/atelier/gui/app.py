@@ -9,7 +9,8 @@ API, so it runs on the normal platform. By default the window is never shown: `Q
 hidden window offscreen, which is right for the 3D view and the panes, but a hidden window renders no frames, so
 images inside views (the gallery, the references) mostly never arrive, and only its first grab is reliable.
 `--screenshot-shown` shows the window instead, for a run launched where it cannot be seen, such as a silent Hyprland
-special workspace; that screenshot is exactly what the user would see.
+special workspace; that screenshot is exactly what the user would see. `--revision`, `--compare`, `--compare-base`
+and `--compare-view` stage a revision (by number) or compare once the source's history has arrived.
 """
 
 from __future__ import annotations
@@ -55,6 +56,10 @@ class GuiOptions(BaseModel):
     source: str | None = Field(default=None, description="The source to select, project-relative.")
     export: str | None = Field(default=None, description="The export to show, by file name or stem.")
     render: str | None = Field(default=None, description="A render to show full size, by file name.")
+    revision: int | None = Field(default=None, description="The revision to show on the stage, by number.")
+    compare: str | None = Field(default=None, description="Compare as `renders` or `models`.")
+    compare_base: int | None = Field(default=None, description="The revision compare shows beside, by number.")
+    compare_view: str | None = Field(default=None, description="The standard view compare shows.")
     view_options: dict[str, object] = Field(
         default_factory=dict,
         description="Viewport and pane settings applied at start (lighting, wireframe, collision, tab).",
@@ -123,10 +128,14 @@ class _ScreenshotDriver(QObject):
         self._options = options
         self._is_selected = False
         self._is_grab_scheduled = False
+        self._needs_history = any(
+            option is not None for option in (options.revision, options.compare, options.compare_base)
+        )
         self.is_written = False
 
         studio.projectChanged.connect(self._on_project)
         studio.stageReadyChanged.connect(self._on_stage_ready_changed)
+        studio.historyChanged.connect(self._on_history)
         QTimer.singleShot(_SCREENSHOT_TIMEOUT_MS, self._give_up)
 
     @Slot()
@@ -164,11 +173,36 @@ class _ScreenshotDriver(QObject):
                 QGuiApplication.exit(1)
                 return
             self._studio.showRender(matches[0])
+        self._on_history()
+        self._on_stage_ready_changed()
+
+    @Slot()
+    def _on_history(self) -> None:
+        """Stage the revision or compare the options name, once the selected source's history has arrived."""
+        if not (self._is_selected and self._needs_history and self._studio.hasRevisions):
+            return
+        self._needs_history = False
+        options = self._options
+        try:
+            if options.revision is not None:
+                self._studio.selectRevision(self._studio.revision_id_by_number(options.revision))
+            if options.compare_base is not None:
+                self._studio.setCompareBase(self._studio.revision_id_by_number(options.compare_base))
+            elif options.compare:
+                self._studio.startCompare()
+        except KeyError as error:
+            logger.error(f"[Screenshot] {error}")
+            QGuiApplication.exit(1)
+            return
+        if options.compare:
+            self._studio.setCompareMode(options.compare)
+        if options.compare_view:
+            self._studio.setCompareView(options.compare_view)
         self._on_stage_ready_changed()
 
     @Slot()
     def _on_stage_ready_changed(self) -> None:
-        if self._is_selected and self._studio.isStageReady:
+        if self._is_selected and not self._needs_history and self._studio.isStageReady:
             self._schedule_grab()
 
     def _schedule_grab(self) -> None:

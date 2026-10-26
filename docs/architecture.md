@@ -40,7 +40,7 @@ guarantee.
 | `<project>/atelier.toml`                | Project config, versioned with the project (see `catalog.md`) |
 | `<project>/.atelier/state.db`           | SQLite (WAL): sources, statuses, camera bookmarks, revisions, feedback, sessions |
 | `<project>/.atelier/objects/`           | Content-addressed snapshot bytes (see `revisions.md`)        |
-| `<project>/.atelier/renders/`           | Standard renders per revision                                |
+| `<project>/.atelier/renders/`           | Standard renders per revision (see `revisions.md`)           |
 | `<project>/.atelier/feedback/`          | Markup captures and annotated images                         |
 | `<project>/.atelier/cache/`             | Exports converted to `.glb` with their stats, named by the FBX's sha256 (see `viewer.md`) |
 | `~/.local/share/atelier/projects.toml`  | The machine's registry of known projects                     |
@@ -75,8 +75,8 @@ One `uv` project, two import packages under `src/`:
 
 | Package    | Holds                                                                                          |
 |------------|------------------------------------------------------------------------------------------------|
-| `atelierd` | The core: `config` (`atelier.toml`), `registry`, `project` (paths, state folder, ignore entry), `catalog` (discovery, references, `state.db` store, the `Catalog` service, the watcher), `blender` (running a script in headless Blender), `exports` (converting exports to `.glb` and measuring them, cached). The daemon, its RPC and the manager MCP adapter join it here. |
-| `atelier`  | Front ends: the `atelier` command line (`atelier.cli`), and the desktop app (`atelier.gui`: the backend interface, the `Studio` view-model, and the QML in `gui/qml/`). |
+| `atelierd` | The core: `config` (`atelier.toml`), `registry`, `project` (paths, state folder, ignore entry), `catalog` (discovery, references, `state.db` store, the `Catalog` service, the watcher), `blender` (running a script in headless Blender), `exports` (converting exports to `.glb` and measuring them, cached), `revisions` (the object store, revision manifests, standard renders, restore and prune, and the `RevisionTracker` that records and renders in the background). The daemon, its RPC and the manager MCP adapter join it here. |
+| `atelier`  | Front ends: the `atelier` command line (`atelier.cli`: `scan`, `prune`), and the desktop app (`atelier.gui`: the backend interface, the `Studio` view-model, and the QML in `gui/qml/`). |
 
 `atelier` imports `atelierd`; `atelierd` never imports `atelier`. The core neither prints nor parses arguments: its
 functions take paths and models and return pydantic models, which is what keeps the CLI, the RPC and the MCP thin.

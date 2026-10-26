@@ -7,6 +7,11 @@ Loading an export follows `docs/viewer.md`: the FBX goes straight to Qt Quick 3D
 picture while Blender converts it in the background, and the converted `.glb` replaces it as soon as it is ready,
 because assimp's reading of a Blender-made FBX gets its colours and texture paths wrong. The reviewer can keep the
 direct load instead, to see what assimp makes of the file.
+
+Revisions follow `docs/revisions.md`. The stage follows the selected source's newest revision, which is the project's
+files as they are, until an older one is picked in the filmstrip; then the stage shows that revision as snapshotted:
+its exports converted from the object store, its renders read from it, and its standard renders first in the gallery.
+Compare puts two revisions side by side, as standard renders or as two models.
 """
 
 from __future__ import annotations
@@ -19,13 +24,31 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict
 from PySide6.QtCore import Property, QObject, QUrl, Signal, Slot
 
-from atelier.gui.backend import StudioBackend
+from atelier.gui.backend import StudioBackend, StudioEvent
 from atelier.gui.gallery import group_renders_by_stem
 from atelier.gui.list_model import RowListModel
+from atelier.gui.revisions import (
+    RENDER_STATE_LABELS,
+    TRIGGER_LABELS,
+    RevisionRow,
+    build_revision_rows,
+    find_render_set,
+    previous_revision_id,
+    revision_label,
+)
 from atelier.gui.tasks import TaskRunner
 from atelier.gui.tree import SourceRow, build_source_rows
-from atelierd.catalog import CameraBookmark, CatalogEvent, Reference, ScanResult, Source, SourceStatus
+from atelierd.catalog import CameraBookmark, Reference, ScanResult, Source, SourceStatus
 from atelierd.exports import ConvertedExport
+from atelierd.revisions import (
+    STANDARD_VIEWS,
+    FileKind,
+    RenderState,
+    RestoreResult,
+    Revision,
+    RevisionEvent,
+    SourceHistory,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +67,37 @@ class ConversionState:
     RUNNING = "running"
     DONE = "done"
     FAILED = "failed"
+
+
+class CompareMode:
+    """What compare puts side by side."""
+
+    RENDERS = "renders"
+    MODELS = "models"
+
+
+# The gallery's first group: the stage revision's standard renders of the selected export.
+STANDARD_GROUP = "Standard"
+
+
+def stats_payload(converted: ConvertedExport | None) -> dict[str, Any]:
+    """An export's stats as QML reads them, or an empty map before Blender has measured it."""
+    if not converted:
+        return {}
+    stats = converted.stats
+    size_x, size_y, size_z = stats.size_cm
+    return {
+        "triangles": stats.triangles,
+        "materials": len(stats.materials),
+        "materialNames": list(stats.materials),
+        "collisionHulls": len(stats.collision_hulls),
+        "isSkinned": stats.is_skinned,
+        "sizeX": size_x,
+        "sizeY": size_y,
+        "sizeZ": size_z,
+        "boundsMin": list(stats.bounds_min_cm),
+        "boundsMax": list(stats.bounds_max_cm),
+    }
 
 
 # ========================================================================================
@@ -96,6 +150,64 @@ class BookmarkRow(BaseModel):
     distance: float
 
 
+class CompareSide(QObject):
+    """One half of compare: a revision's standard render of the chosen view, and its export as a model."""
+
+    changed = Signal()
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.revision_id = 0
+        self._label = ""
+        self._image_url = ""
+        self._image_note = ""
+        self._model_url = ""
+        self._stats: dict[str, Any] = {}
+        # The (revision, export) whose model is loaded or on its way, so a late conversion of another is ignored.
+        self.model_key: tuple[int, str] = (0, "")
+
+    def _get_label(self) -> str:
+        return self._label
+
+    def _get_image_url(self) -> str:
+        return self._image_url
+
+    def _get_image_note(self) -> str:
+        return self._image_note
+
+    def _get_model_url(self) -> str:
+        return self._model_url
+
+    def _get_stats(self) -> dict[str, Any]:
+        return self._stats
+
+    label = Property(str, _get_label, notify=changed)
+    imageUrl = Property(str, _get_image_url, notify=changed)
+    imageNote = Property(str, _get_image_note, notify=changed)
+    modelUrl = Property(str, _get_model_url, notify=changed)
+    stats = Property(dict, _get_stats, notify=changed)
+
+    def show(self, revision_id: int, label: str, image_url: str, image_note: str) -> None:
+        """Show a revision's standard render (or why there is none)."""
+        self.revision_id = revision_id
+        self._label = label
+        self._image_url = image_url
+        self._image_note = image_note
+        self.changed.emit()
+
+    def set_model(self, url: str, stats: dict[str, Any]) -> None:
+        """Show a converted export, or nothing while it converts."""
+        self._model_url = url
+        self._stats = stats
+        self.changed.emit()
+
+    def is_settled(self, mode: str) -> bool:
+        """Whether this half shows what it will settle on, for the screenshot path."""
+        if mode == CompareMode.MODELS:
+            return bool(self._model_url)
+        return bool(self._image_url) or self._image_note not in ("", RENDER_STATE_LABELS[RenderState.PENDING])
+
+
 class Studio(QObject):
     """State and actions of the review window."""
 
@@ -111,9 +223,11 @@ class Studio(QObject):
     messageChanged = Signal()
     busyChanged = Signal()
     stageReadyChanged = Signal()
+    historyChanged = Signal()
+    compareChanged = Signal()
 
-    # Emitted by the watcher's thread; connected queued, so the handler runs on the UI thread.
-    _catalogEventArrived = Signal(object)
+    # Emitted by the core's threads (the watcher, revisions); connected queued, so the handler runs on the UI thread.
+    _coreEventArrived = Signal(object)
 
     def __init__(self, backend: StudioBackend, tasks: TaskRunner) -> None:
         super().__init__()
@@ -144,14 +258,31 @@ class Studio(QObject):
         self._converted: ConvertedExport | None = None
         # Bumped whenever the export on the stage changes, so a late conversion of an older one is ignored.
         self._load_generation = 0
+        # The revision the loaded export comes from, or 0 for the project's own files.
+        self._load_revision_id = 0
+        self._stage_image_name = ""
+
+        # The selected source's revisions, and which of them the stage and compare show.
+        self._history: SourceHistory | None = None
+        # 0 follows the newest revision, which is the project's files as they are.
+        self._staged_revision_id = 0
+        self._is_comparing = False
+        self._compare_mode = CompareMode.RENDERS
+        self._compare_view = STANDARD_VIEWS[0]
+        self._compare_base_id = 0
+        self._compare_left = CompareSide()
+        self._compare_right = CompareSide()
+        # Standard renders already asked for, so showing a revision again does not ask twice.
+        self._requested_renders: set[tuple[int, str]] = set()
 
         self._source_rows = RowListModel(SourceRow)
         self._export_rows = RowListModel(ExportRow)
         self._render_rows = RowListModel(RenderRow)
         self._reference_rows = RowListModel(ReferenceRow)
         self._bookmark_rows = RowListModel(BookmarkRow)
+        self._revision_rows = RowListModel(RevisionRow)
 
-        self._catalogEventArrived.connect(self._on_catalog_event)
+        self._coreEventArrived.connect(self._on_core_event)
 
     # ####################### #
     #       PROPERTIES        #
@@ -230,25 +361,52 @@ class Studio(QObject):
         return self._conversion_state
 
     def _get_stats(self) -> dict[str, Any]:
-        if not self._converted:
-            return {}
-        stats = self._converted.stats
-        size_x, size_y, size_z = stats.size_cm
-        return {
-            "triangles": stats.triangles,
-            "materials": len(stats.materials),
-            "materialNames": list(stats.materials),
-            "collisionHulls": len(stats.collision_hulls),
-            "isSkinned": stats.is_skinned,
-            "sizeX": size_x,
-            "sizeY": size_y,
-            "sizeZ": size_z,
-            "boundsMin": list(stats.bounds_min_cm),
-            "boundsMax": list(stats.bounds_max_cm),
-        }
+        return stats_payload(self._converted)
 
     def _get_stage_image(self) -> str:
         return self._stage_image
+
+    def _get_stage_image_name(self) -> str:
+        return self._stage_image_name
+
+    def _get_revision_rows(self) -> QObject:
+        return self._revision_rows
+
+    def _get_has_revisions(self) -> bool:
+        return bool(self._history and self._history.revisions)
+
+    def _get_staged_revision(self) -> int:
+        staged = self._staged_revision()
+        return staged.id if staged else 0
+
+    def _get_staged_label(self) -> str:
+        staged = self._staged_revision()
+        return revision_label(staged) if staged else ""
+
+    def _get_is_following_newest(self) -> bool:
+        return not self._is_showing_past()
+
+    def _get_restore_mark_text(self) -> str:
+        mark = self._history.restore_mark if self._history else None
+        return f"Restored to r{mark.revision_number}" if mark else ""
+
+    def _get_is_comparing(self) -> bool:
+        return self._is_comparing
+
+    def _get_compare_mode(self) -> str:
+        return self._compare_mode
+
+    def _get_compare_view(self) -> str:
+        return self._compare_view
+
+    def _get_compare_left(self) -> QObject:
+        return self._compare_left
+
+    def _get_compare_right(self) -> QObject:
+        return self._compare_right
+
+    def _get_standard_views(self) -> list[str]:
+        return list(STANDARD_VIEWS)
 
     def _get_message(self) -> str:
         return self._message
@@ -257,7 +415,11 @@ class Studio(QObject):
         return self._busy_count > 0
 
     def _get_is_stage_ready(self) -> bool:
-        """Whether the stage shows what it will settle on: a reported model with its stats, or an image."""
+        """Whether the stage shows what it will settle on: a reported model with its stats, an image, or compare."""
+        if self._is_comparing:
+            return self._compare_left.is_settled(self._compare_mode) and self._compare_right.is_settled(
+                self._compare_mode
+            )
         if self._stage_image:
             return True
         if not self._selected_export:
@@ -286,6 +448,19 @@ class Studio(QObject):
     conversionState = Property(str, _get_conversion_state, notify=statsChanged)
     stats = Property(dict, _get_stats, notify=statsChanged)
     stageImage = Property(str, _get_stage_image, notify=stageChanged)
+    stageImageName = Property(str, _get_stage_image_name, notify=stageChanged)
+    revisionRows = Property(QObject, _get_revision_rows, constant=True)
+    hasRevisions = Property(bool, _get_has_revisions, notify=historyChanged)
+    stagedRevision = Property(int, _get_staged_revision, notify=historyChanged)
+    stagedLabel = Property(str, _get_staged_label, notify=historyChanged)
+    isFollowingNewest = Property(bool, _get_is_following_newest, notify=historyChanged)
+    restoreMarkText = Property(str, _get_restore_mark_text, notify=historyChanged)
+    isComparing = Property(bool, _get_is_comparing, notify=compareChanged)
+    compareMode = Property(str, _get_compare_mode, notify=compareChanged)
+    compareView = Property(str, _get_compare_view, notify=compareChanged)
+    compareLeft = Property(QObject, _get_compare_left, constant=True)
+    compareRight = Property(QObject, _get_compare_right, constant=True)
+    standardViews = Property(list, _get_standard_views, constant=True)
     message = Property(str, _get_message, notify=messageChanged)
     isBusy = Property(bool, _get_is_busy, notify=busyChanged)
     isStageReady = Property(bool, _get_is_stage_ready, notify=stageReadyChanged)
@@ -294,6 +469,18 @@ class Studio(QObject):
     def export_paths(self) -> list[str]:
         """The selected source's exports, as the export picker lists them."""
         return [row.path for row in self._export_rows.rows if isinstance(row, ExportRow)]
+
+    def revision_id_by_number(self, number: int) -> int:
+        """The id of the selected source's revision `r<number>`.
+
+        Raises:
+            KeyError: the source has no such revision.
+        """
+        revisions = self._history.revisions if self._history else ()
+        revision = next((item for item in revisions if item.number == number), None)
+        if revision is None:
+            raise KeyError(f"{self._selected_source} has no revision r{number}")
+        return revision.id
 
     @property
     def render_paths(self) -> list[str]:
@@ -317,7 +504,7 @@ class Studio(QObject):
             return
         self._show_message(f"Opening {reference}...")
         self._run_catalog(
-            lambda: self._backend.open_project(reference, on_event=self._catalogEventArrived.emit),
+            lambda: self._backend.open_project(reference, on_event=self._coreEventArrived.emit),
             self._on_project_opened,
         )
 
@@ -334,6 +521,7 @@ class Studio(QObject):
         self._project_name = self._backend.project_name
         self._collapsed.clear()
         self._sources = list(result.sources)
+        self._requested_renders.clear()
         self._clear_selection()
         self._rebuild_tree()
         self._set_references(list(result.references))
@@ -343,8 +531,16 @@ class Studio(QObject):
         self.refreshProjects()
 
     @Slot(object)
-    def _on_catalog_event(self, event: CatalogEvent) -> None:
-        """Follow a settled change on disk: refresh the lists, and reload the selection if its files changed."""
+    def _on_core_event(self, event: StudioEvent) -> None:
+        """Follow the core: a revision or its renders refresh the history, and a settled change refreshes the lists.
+
+        A change to the selected source's files reloads it.
+        """
+        if isinstance(event, RevisionEvent):
+            if event.source == self._selected_source:
+                self._refresh_history()
+            return
+
         is_selection_touched = self._selected_source in (*event.touched, *event.change.changed)
         self._run_catalog(self._backend.list_sources, lambda sources: self._on_sources(sources, is_selection_touched))
         if event.change.references_changed:
@@ -407,6 +603,7 @@ class Studio(QObject):
 
     def _clear_selection(self) -> None:
         self._selected_source = ""
+        self._reset_revisions()
         self._export_rows.set_rows([])
         self._render_rows.set_rows([])
         self._bookmark_rows.set_rows([])
@@ -424,28 +621,77 @@ class Studio(QObject):
             logger.warning(f"[Studio] The selected source '{self._selected_source}' is not in the catalog")
             return
 
-        self._export_rows.set_rows([ExportRow(path=path, name=PurePosixPath(path).stem) for path in source.exports])
-        self._render_rows.set_rows(self._render_rows_for(source))
+        if not keep_export:
+            self._reset_revisions()
         self._readme_text = self._read_readme(source)
         self.readmeChanged.emit()
         self._refresh_bookmarks()
+        self._show_stage_files(keep_export)
+        self._refresh_history()
 
-        export = self._selected_export if keep_export and self._selected_export in source.exports else ""
-        export = export or (source.exports[0] if source.exports else "")
+    def _show_stage_files(self, keep_export: bool) -> None:
+        """Fill the export picker, the gallery and the stage from the revision the stage shows."""
+        exports = self._stage_exports()
+        self._export_rows.set_rows([ExportRow(path=path, name=PurePosixPath(path).stem) for path in exports])
+
+        export = self._selected_export if keep_export and self._selected_export in exports else ""
+        export = export or (exports[0] if exports else "")
         self._stage_image = ""
-        if not export and source.renders:
-            self._stage_image = self._file_url(source.renders[0])
+        self._stage_image_name = ""
+        self._set_export(export, force_reload=True)
+        if not export:
+            first_render = next((row for row in self._render_rows.rows if isinstance(row, RenderRow) and row.url), None)
+            if first_render:
+                self._stage_image = first_render.url
+                self._stage_image_name = first_render.name
         self.stageChanged.emit()
-        self._set_export(export, force_reload=keep_export)
+        self.stageReadyChanged.emit()
 
-    def _render_rows_for(self, source: Source) -> list[RenderRow]:
-        rows: list[RenderRow] = []
-        for group in group_renders_by_stem(source.renders):
+    def _stage_exports(self) -> list[str]:
+        """The exports of the revision the stage shows: the source's own, unless an older revision is picked."""
+        staged = self._staged_revision() if self._is_showing_past() else None
+        if staged:
+            return [file.path for file in staged.exports]
+        source = self._find_source(self._selected_source)
+        return list(source.exports) if source else []
+
+    def _build_render_rows(self) -> list[RenderRow]:
+        """The gallery: the stage revision's standard renders of the selected export, then the project's renders."""
+        rows = self._standard_render_rows()
+        staged = self._staged_revision() if self._is_showing_past() else None
+        url_by_path: dict[str, str] = {}
+        if staged:
+            for file in staged.files:
+                if file.kind is FileKind.RENDER:
+                    url_by_path[file.path] = QUrl.fromLocalFile(str(self._backend.object_path(file.sha256))).toString()
+        else:
+            source = self._find_source(self._selected_source)
+            for path in source.renders if source else ():
+                url_by_path[path] = self._file_url(path)
+
+        for group in group_renders_by_stem(url_by_path):
             for path in group.renders:
-                rows.append(
-                    RenderRow(stem=group.stem, path=path, name=PurePosixPath(path).name, url=self._file_url(path))
-                )
+                rows.append(RenderRow(stem=group.stem, path=path, name=PurePosixPath(path).name, url=url_by_path[path]))
         return rows
+
+    def _standard_render_rows(self) -> list[RenderRow]:
+        staged = self._staged_revision()
+        if not (staged and self._history and self._selected_export):
+            return []
+        render = find_render_set(self._history, staged.id, self._selected_export)
+        if render is None:
+            return []
+        if render.state is not RenderState.DONE:
+            return [RenderRow(stem=STANDARD_GROUP, path=STANDARD_GROUP, name=RENDER_STATE_LABELS[render.state], url="")]
+        return [
+            RenderRow(
+                stem=STANDARD_GROUP,
+                path=f"{STANDARD_GROUP}/{view}",
+                name=view,
+                url=QUrl.fromLocalFile(str(render.images[view])).toString(),
+            )
+            for view in STANDARD_VIEWS
+        ]
 
     def _read_readme(self, source: Source) -> str:
         if not source.readme:
@@ -472,8 +718,16 @@ class Studio(QObject):
 
     @Slot(str)
     def showRender(self, render_path: str) -> None:
-        """Show a render full size on the stage."""
-        self._stage_image = self._file_url(render_path)
+        """Show a render from the gallery full size on the stage."""
+        row = next(
+            (row for row in self._render_rows.rows if isinstance(row, RenderRow) and row.path == render_path), None
+        )
+        if not (row and row.url):
+            logger.debug(f"[Studio] showRender: the gallery has no image '{render_path}'")
+            return
+        self._stage_image = row.url
+        is_standard = row.stem == STANDARD_GROUP
+        self._stage_image_name = f"{self._get_staged_label()} {row.name}" if is_standard else row.name
         self.stageChanged.emit()
         self.stageReadyChanged.emit()
 
@@ -481,6 +735,7 @@ class Studio(QObject):
     def showModel(self) -> None:
         """Go back from a render to the 3D viewport."""
         self._stage_image = ""
+        self._stage_image_name = ""
         self.stageChanged.emit()
         self.stageReadyChanged.emit()
 
@@ -508,7 +763,11 @@ class Studio(QObject):
             self._set_export(self._selected_export, force_reload=True)
 
     def _set_export(self, export_path: str, force_reload: bool = False) -> None:
-        """Load an export onto the stage directly, and start the conversion that brings its stats and its `.glb`."""
+        """Load an export onto the stage, and start the conversion that brings its stats and its `.glb`.
+
+        The project's own export goes straight to the viewport too; an older revision's has no file Qt could load
+        directly, so it waits for the conversion.
+        """
         if export_path == self._selected_export and not force_reload:
             return
         self._selected_export = export_path
@@ -516,6 +775,10 @@ class Studio(QObject):
         self._direct_failed = False
         self._is_model_reported = False
         self._converted = None
+        staged = self._staged_revision() if self._is_showing_past() else None
+        self._load_revision_id = staged.id if staged else 0
+        self._render_rows.set_rows(self._build_render_rows())
+        self._refresh_revision_views()
         self.exportChanged.emit()
 
         if not export_path:
@@ -527,11 +790,20 @@ class Studio(QObject):
 
         self._conversion_state = ConversionState.RUNNING
         self.statsChanged.emit()
-        self._set_model(self._file_url(export_path), LoadPath.DIRECT)
+        revision_id = self._load_revision_id
+        if revision_id:
+            self._set_model("", "")
+        else:
+            self._set_model(self._file_url(export_path), LoadPath.DIRECT)
+
+        def convert() -> ConvertedExport:
+            if revision_id:
+                return self._backend.convert_revision_export(revision_id, export_path)
+            return self._backend.convert_export(export_path)
 
         generation = self._load_generation
         self._tasks.run_conversion(
-            lambda: self._backend.convert_export(export_path),
+            convert,
             lambda converted: self._on_converted(generation, converted),
             lambda error: self._on_conversion_failed(generation, error),
         )
@@ -543,7 +815,7 @@ class Studio(QObject):
             return
         self._converted = converted
         self._conversion_state = ConversionState.DONE
-        if self._direct_failed or not self._is_direct_preferred:
+        if self._direct_failed or not self._is_direct_preferred or self._load_revision_id:
             self._switch_to_converted()
         self.statsChanged.emit()
         self.stageReadyChanged.emit()
@@ -571,6 +843,222 @@ class Studio(QObject):
         # A new revision makes the viewport reload even when the URL is unchanged (the export was rewritten).
         self._model_revision += 1
         self.modelChanged.emit()
+
+    # ####################### #
+    #  REVISIONS AND COMPARE  #
+    # ####################### #
+
+    @Slot(int)
+    def selectRevision(self, revision_id: int) -> None:
+        """Show a revision on the stage; picking the newest follows the newest again."""
+        history = self._history
+        if not (history and any(revision.id == revision_id for revision in history.revisions)):
+            logger.warning(f"[Studio] selectRevision: {self._selected_source} has no revision {revision_id}")
+            return
+        newest_id = history.revisions[0].id
+        self._staged_revision_id = 0 if revision_id == newest_id else revision_id
+        if self._is_comparing and self._compare_base_id == revision_id:
+            self._compare_base_id = previous_revision_id(history, revision_id)
+            self._is_comparing = bool(self._compare_base_id)
+            self.compareChanged.emit()
+        self._show_stage_files(keep_export=True)
+        self.historyChanged.emit()
+
+    @Slot()
+    def followNewest(self) -> None:
+        """Go back to following the newest revision."""
+        if self._history and self._history.revisions:
+            self.selectRevision(self._history.revisions[0].id)
+
+    @Slot()
+    def startCompare(self) -> None:
+        """Compare the stage's revision with the one before it."""
+        staged = self._staged_revision()
+        if not (staged and self._history):
+            self._show_message("This source has no revisions to compare yet")
+            return
+        base_id = previous_revision_id(self._history, staged.id)
+        if not base_id:
+            self._show_message(f"{revision_label(staged)} is this source's first revision; pick a later one")
+            return
+        self._compare_base_id = base_id
+        self._is_comparing = True
+        self.compareChanged.emit()
+        self._refresh_revision_views()
+        self.stageReadyChanged.emit()
+
+    @Slot()
+    def stopCompare(self) -> None:
+        """Leave compare for the single stage."""
+        self._is_comparing = False
+        self._compare_base_id = 0
+        self.compareChanged.emit()
+        self._refresh_revision_views()
+        self.stageReadyChanged.emit()
+
+    @Slot(int)
+    def setCompareBase(self, revision_id: int) -> None:
+        """Compare the stage's revision with this one instead."""
+        staged = self._staged_revision()
+        if staged and revision_id == staged.id:
+            self._show_message("Pick a different revision than the one on the stage to compare with")
+            return
+        self._compare_base_id = revision_id
+        self._is_comparing = True
+        self.compareChanged.emit()
+        self._refresh_revision_views()
+        self.stageReadyChanged.emit()
+
+    @Slot(str)
+    def setCompareMode(self, mode: str) -> None:
+        """Compare standard renders (`renders`) or the two exports as models (`models`)."""
+        self._compare_mode = mode
+        self.compareChanged.emit()
+        self._refresh_revision_views()
+        self.stageReadyChanged.emit()
+
+    @Slot(str)
+    def setCompareView(self, view: str) -> None:
+        """Pick which standard view compare shows."""
+        self._compare_view = view
+        self.compareChanged.emit()
+        self._refresh_revision_views()
+
+    @Slot(int)
+    def restoreRevision(self, revision_id: int) -> None:
+        """Write a whole earlier revision of the selected source back into the project."""
+        source_path = self._selected_source
+        if not source_path:
+            logger.debug("[Studio] restoreRevision called with nothing selected")
+            return
+        self._show_message(f"Restoring {PurePosixPath(source_path).stem}...")
+        self._run_catalog(lambda: self._backend.restore_revision(source_path, revision_id), self._on_restored)
+
+    def _on_restored(self, result: RestoreResult) -> None:
+        self._show_message(
+            f"Restored to r{result.target.number}. r{result.pre_restore.number} holds the state before; restore it "
+            "to undo"
+        )
+        self._staged_revision_id = 0
+        self._is_comparing = False
+        self.compareChanged.emit()
+        self._show_stage_files(keep_export=True)
+        self._refresh_history()
+
+    def _reset_revisions(self) -> None:
+        """Forget the previous source's history: a newly selected source starts on its newest revision."""
+        self._history = None
+        self._staged_revision_id = 0
+        self._is_comparing = False
+        self._compare_base_id = 0
+        self._revision_rows.set_rows([])
+        self.historyChanged.emit()
+        self.compareChanged.emit()
+
+    def _refresh_history(self) -> None:
+        source_path = self._selected_source
+        if not source_path:
+            return
+        self._run_catalog(lambda: self._backend.get_history(source_path), self._on_history)
+
+    def _on_history(self, history: SourceHistory) -> None:
+        if history.source != self._selected_source:
+            logger.debug(f"[Studio] Dropping the history of {history.source}, no longer selected")
+            return
+        was_showing = self._staged_revision()
+        self._history = history
+        known_ids = {revision.id for revision in history.revisions}
+        if self._staged_revision_id not in known_ids:
+            self._staged_revision_id = 0
+        if self._compare_base_id not in known_ids:
+            self._is_comparing = False
+            self._compare_base_id = 0
+            self.compareChanged.emit()
+
+        staged = self._staged_revision()
+        if self._is_showing_past() and (was_showing is None or was_showing.id != (staged.id if staged else 0)):
+            self._show_stage_files(keep_export=True)
+        else:
+            self._render_rows.set_rows(self._build_render_rows())
+        self._refresh_revision_views()
+        self.historyChanged.emit()
+        self.stageReadyChanged.emit()
+
+    def _refresh_revision_views(self) -> None:
+        """Rebuild what depends on the history and the selected export: the filmstrip, compare, and render requests."""
+        history = self._history
+        staged = self._staged_revision()
+        if not (history and staged):
+            self._revision_rows.set_rows([])
+            return
+        base_id = self._compare_base_id if self._is_comparing else 0
+        self._revision_rows.set_rows(build_revision_rows(history, self._selected_export, staged.id, base_id))
+        if self._is_comparing:
+            self._show_compare_side(self._compare_left, base_id)
+            self._show_compare_side(self._compare_right, staged.id)
+        for revision_id in (staged.id, base_id):
+            self._request_renders(revision_id)
+
+    def _show_compare_side(self, side: CompareSide, revision_id: int) -> None:
+        history = self._history
+        revision = next((item for item in history.revisions if item.id == revision_id), None) if history else None
+        if not (history and revision):
+            side.show(0, "", "", "")
+            return
+
+        label = f"{revision_label(revision)}  {TRIGGER_LABELS[revision.trigger]}"
+        render = find_render_set(history, revision_id, self._selected_export)
+        if render is None:
+            side.show(revision_id, label, "", "No such export in this revision")
+            side.set_model("", {})
+            return
+        image_url = ""
+        if render.state is RenderState.DONE:
+            image_url = QUrl.fromLocalFile(str(render.images[self._compare_view])).toString()
+        side.show(revision_id, label, image_url, RENDER_STATE_LABELS[render.state])
+
+        model_key = (revision_id, self._selected_export)
+        if self._compare_mode != CompareMode.MODELS or side.model_key == model_key:
+            return
+        side.model_key = model_key
+        side.set_model("", {})
+        export_path = self._selected_export
+
+        def on_converted(converted: ConvertedExport) -> None:
+            if side.model_key != model_key:
+                return
+            side.set_model(QUrl.fromLocalFile(str(converted.glb_path)).toString(), stats_payload(converted))
+            self.stageReadyChanged.emit()
+
+        def on_failed(error: Exception) -> None:
+            logger.error(f"[Studio] Could not convert {export_path} of revision {revision_id}: {error}")
+            self._show_message(f"Blender could not convert {PurePosixPath(export_path).name} of {label}")
+
+        self._tasks.run_conversion(
+            lambda: self._backend.convert_revision_export(revision_id, export_path), on_converted, on_failed
+        )
+
+    def _request_renders(self, revision_id: int) -> None:
+        """Ask for a revision's standard renders of the selected export, if it has none and none are coming."""
+        export_path = self._selected_export
+        render = find_render_set(self._history, revision_id, export_path) if self._history else None
+        key = (revision_id, export_path)
+        if render is None or render.state is not RenderState.MISSING or key in self._requested_renders:
+            return
+        self._requested_renders.add(key)
+        self._run_catalog(lambda: self._backend.request_standard_renders(revision_id, export_path), lambda _: None)
+
+    def _staged_revision(self) -> Revision | None:
+        """The revision the stage shows: the picked one, else the newest; None before the source has one."""
+        if not (self._history and self._history.revisions):
+            return None
+        picked = next((item for item in self._history.revisions if item.id == self._staged_revision_id), None)
+        return picked or self._history.revisions[0]
+
+    def _is_showing_past(self) -> bool:
+        return bool(
+            self._staged_revision_id and self._history and self._history.revisions[0].id != self._staged_revision_id
+        )
 
     # ####################### #
     #   BOOKMARKS, REFERENCES #
