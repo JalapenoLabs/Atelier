@@ -127,6 +127,9 @@ WORKER_BLENDER_SERVER_NAME = "blender"
 WORKER_APPROVAL_TOOL = "approve"
 # The header carrying a worker's secret token on every call it makes to the worker-side MCP.
 WORKER_TOKEN_HEADER = "X-Atelier-Worker"
+# How long Claude Code waits on one call to the worker-side MCP: an approval waits for the reviewer, who may be away.
+# Without it Claude Code gives up on a permission prompt after about a minute and asks again.
+WORKER_MCP_TIMEOUT_MS = 24 * 60 * 60 * 1000
 # The Unreal content tree; anything under it escalates (see docs/workers.md).
 UNREAL_CONTENT_FOLDER = "Content"
 

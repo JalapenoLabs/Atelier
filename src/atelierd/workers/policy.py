@@ -4,7 +4,8 @@ One function, `evaluate`, decides for both places Claude Code consults Atelier: 
 which sees every call, and the permission-prompt tool (`mcp.py`), which sees what Claude Code would otherwise ask
 about. They can therefore never disagree. The rules are the table in `docs/workers.md`:
 
-- Reads anywhere in the project (and in its state folder, where feedback and transcripts live) run.
+- Reads anywhere in the project run, and so do reads in its state folder (where feedback and transcripts live) and in
+  Claude Code's own configuration folder (`~/.claude`, which the user's own instructions send every agent to read).
 - Writes under the source's own folder, and to its discovered files wherever they are, run.
 - Its own Blender MCP, Atelier's worker tools and `blender -b` runs run.
 - Everything else escalates: writes outside the scope, writes to `shared` paths (even inside the source's folder),
@@ -138,6 +139,10 @@ class ScopePolicy(BaseModel):
 
     project_root: Path = Field(description="Absolute and resolved; also the worker's working directory.")
     state_dir: Path = Field(description="Atelier's state folder, readable for feedback and transcripts.")
+    read_folders: tuple[Path, ...] = Field(
+        default=(),
+        description="Absolute folders outside the project that are read freely: Claude Code's configuration folder.",
+    )
     source: str
     write_folders: tuple[str, ...] = Field(description="Project-relative folders the worker writes under freely.")
     write_files: tuple[str, ...] = Field(
@@ -176,9 +181,11 @@ def build_scope_policy(project: Project, source: Source) -> ScopePolicy:
         write_files.append(source.builder)
     elif source.builder:
         shared_files.append(source.builder)
+    claude_config_dir = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude").resolve()
     return ScopePolicy(
         project_root=project.root,
         state_dir=project.state_dir,
+        read_folders=(claude_config_dir,),
         source=source.path,
         write_folders=(folder.as_posix(),),
         write_files=tuple(write_files),
@@ -246,6 +253,8 @@ def _check_read(policy: ScopePolicy, target: str) -> PolicyDecision:
     path = _resolve(policy, target)
     if path.is_relative_to(policy.state_dir):
         return PolicyDecision(is_allowed=True, reason="Reads Atelier's state (feedback, transcripts)")
+    if any(path.is_relative_to(folder) for folder in policy.read_folders):
+        return PolicyDecision(is_allowed=True, reason="Reads Claude Code's own configuration")
     relative_path = _project_relative(policy, path)
     if relative_path is None:
         return PolicyDecision(is_allowed=False, reason=f"Reads outside the project: {path}")

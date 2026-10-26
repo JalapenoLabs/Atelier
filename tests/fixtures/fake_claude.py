@@ -124,7 +124,11 @@ class Turn:
             headers={**headers, **server.get("headers", {})},
         )
         with urllib.request.urlopen(request, timeout=600) as response:
-            result = json.loads(response.read())["result"]
+            body = response.read().decode()
+        # The worker server answers over SSE: the response is the `data:` line of a `message` event.
+        data_lines = [line[len("data:") :].strip() for line in body.splitlines() if line.startswith("data:")]
+        messages = [json.loads(line) for line in data_lines if line] or [json.loads(body)]
+        result = next(message["result"] for message in messages if "result" in message)
         answer = json.loads(result["content"][0]["text"])
         return str(answer["behavior"]), str(answer.get("message", ""))
 

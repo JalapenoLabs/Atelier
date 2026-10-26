@@ -2,7 +2,8 @@
 
 Startup order matters. The HTTP socket is bound first, so the worker-side MCP's port is known before any worker can
 be configured with it (port 0 picks a free one, which the tests use). Then the core, then the RPC socket, then HTTP
-serving. Stopping runs it backwards: no new requests, then every worker's processes, then the watchers and trackers.
+serving. Stopping runs it backwards: no new RPC requests, then every project (its workers' processes, watcher and
+tracker), then HTTP.
 
 uvicorn normally captures SIGINT and SIGTERM itself; here the daemon owns shutdown (it must stop workers, not only
 HTTP), so `_Uvicorn` leaves signals to the daemon's own handlers.
@@ -39,6 +40,8 @@ from atelierd.workers import BlenderLauncher, WorkerSettings, launch_background_
 from atelierd.workers.models import Approval
 
 logger = logging.getLogger(__name__)
+
+_HTTP_SHUTDOWN_TIMEOUT_S = 5
 
 
 class DaemonOptions(BaseModel):
@@ -116,7 +119,14 @@ class Daemon:
             http_socket.close()
             raise
 
-        http = _Uvicorn(uvicorn.Config(build_http_app(core), log_level="warning", lifespan="on"))
+        http_config = uvicorn.Config(
+            build_http_app(core),
+            log_level="warning",
+            lifespan="on",
+            # A worker's open MCP connection must not hold the daemon up once its worker has stopped.
+            timeout_graceful_shutdown=_HTTP_SHUTDOWN_TIMEOUT_S,
+        )
+        http = _Uvicorn(http_config)
         http_task = asyncio.create_task(http.serve(sockets=[http_socket]))
         logger.info(
             f"[Daemon] Serving: RPC on {self.options.socket_path}, MCP on http://127.0.0.1:{self.http_port} "
@@ -129,10 +139,11 @@ class Daemon:
         finally:
             logger.info("[Daemon] Stopping")
             await rpc.close()
+            # Workers first: stopping them cancels their pending approvals, which ends the HTTP calls waiting on them.
+            await asyncio.to_thread(core.shutdown)
             http.should_exit = True
             await http_task
             http_socket.close()
-            await asyncio.to_thread(core.shutdown)
             logger.info("[Daemon] Stopped")
 
 

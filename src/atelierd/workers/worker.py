@@ -40,6 +40,7 @@ from atelierd.constants import (
     WORKER_BLENDER_SERVER_NAME,
     WORKER_BLENDER_START_TIMEOUT_S,
     WORKER_MCP_SERVER_NAME,
+    WORKER_MCP_TIMEOUT_MS,
     WORKER_STOP_TIMEOUT_S,
     WORKER_TOKEN_HEADER,
     WORKERS_DIR_NAME,
@@ -518,6 +519,7 @@ class Worker:
                     "type": "http",
                     "url": self._settings.worker_mcp_url,
                     "headers": {WORKER_TOKEN_HEADER: self.token},
+                    "timeout": WORKER_MCP_TIMEOUT_MS,
                 },
             }
         }

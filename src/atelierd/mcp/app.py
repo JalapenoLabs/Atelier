@@ -2,10 +2,12 @@
 
 - `/worker/mcp`: the worker-side `atelier` server (`worker.py`). Every request must carry a live worker's token in
   `X-Atelier-Worker`; anything else is refused before the MCP layer sees it, so the open port serves nobody else.
-- The manager MCP mounts here too, at `/mcp`, beside the worker server and over the same core.
+- The manager MCP is to mount here too, at `/mcp`, beside the worker server and over the same core.
 
-Both servers are stateless and answer with plain JSON (no SSE streams), which Claude Code accepts. A mounted app's own
-lifespan never runs, so this app's lifespan runs every server's session manager.
+The worker server is stateless and answers over SSE rather than with a plain JSON body: an approval can wait on the
+reviewer for hours, and a response whose first byte never comes is abandoned by Claude Code after about a minute,
+while an SSE response starts at once and is kept alive with pings. A mounted app's own lifespan never runs, so this
+app's lifespan runs every server's session manager.
 """
 
 from __future__ import annotations
@@ -58,7 +60,7 @@ def build_http_app(core: AtelierCore) -> Starlette:
     worker_server = build_worker_mcp(core)
     worker_app = worker_server.streamable_http_app(
         streamable_http_path=MCP_PATH,
-        json_response=True,
+        json_response=False,
         stateless_http=True,
     )
 
