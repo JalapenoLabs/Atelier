@@ -16,9 +16,10 @@ A three-pane studio:
 ┌ Atelier  AnchorFall ▾  status message ──────────────────────────────────────────────────┐
 │ Sources      │ Carbine [In review ▾]          Export [SK_Carbine ▾] │ [Chat] [Refs] [README] │
 │ filter…      │  ┌ stats ┐               [Studio Clay … Views ▾]     │                        │
-│ All statuses │  │ 3D viewport, or a render full size              │ │ references rail,       │
+│ All statuses │  │ 3D viewport, a render, or compare               │ │ references rail,       │
 │ ▾ Weapons    │  └────────────────────────────────────────────────┘ │ drop images here       │
-│   ● Carbine  │  render gallery, grouped by stem                     │                        │
+│   ● Carbine  │  render gallery: standard renders, then by stem      │                        │
+│              │  revision filmstrip     [Newest] [Compare] [Restore] │                        │
 └──────────────┴──────────────────────────────────────────────────────┴────────────────────────┘
 ```
 
@@ -29,8 +30,8 @@ A three-pane studio:
   name (`Carbine/Carbine.blend`) shows as that source. Filters by text (anywhere in the path) and by status; while
   text is filtered every folder shows open.
 - **Stage** (centre): the selected source's name, its status (settable here) and the export picker, over the 3D
-  viewport or a render full size, with the render gallery under it. The revision filmstrip and two-up compare join the
-  stage with revisions (see `revisions.md`).
+  viewport, a render full size, or two revisions compared side by side, with the render gallery and the revision
+  filmstrip under it (see `revisions.md`).
 - **Context** (right): tabs for the source's worker chat (a placeholder until workers), the references rail, and its
   README rendered as Markdown.
 
@@ -109,7 +110,9 @@ the distance in cm.
 
 ## Render gallery
 
-Under the stage, every render of the source, grouped by **stem**, each group labelled. A render's stem is the longest
+Under the stage, the stage revision's **standard renders** of the selected export come first, as the `Standard`
+group (or a tile saying they are rendering, failed, or not rendered yet; see `revisions.md`). Then every render of the
+source, grouped by **stem**, each group labelled. A render's stem is the longest
 `_`-separated prefix of its file name, the whole name included, that another render's name equals or continues:
 `Carbine_Front` and `Carbine_Side` group as `Carbine`; `CB_CargoBooster` and `CB_CargoBooster_2` as
 `CB_CargoBooster`; `Hull_preview` and `Hull_preview_port` as `Hull_preview`; `Hair_Braid_Front` and
@@ -117,8 +120,14 @@ Under the stage, every render of the source, grouped by **stem**, each group lab
 for a fixed list of view words, so the groups come from the set itself.
 
 Clicking a render shows it full size on the stage; **3D view** goes back. A source with renders but no exports opens
-on its first render. The daemon's standard renders join as the first group with revisions, and markup of a render or
-a frozen viewport frame with workers (see `workers.md`).
+on its first render. Markup of a render or a frozen viewport frame joins with workers (see `workers.md`).
+
+## Revision filmstrip
+
+Under the gallery, in the same split, the selected source's revisions, newest first, and the buttons to go back to the
+newest, compare and restore. Picking a revision, compare and restore are described in `revisions.md`. Compare is the
+stage's fourth page: two images, or two more `Viewport`s that take their model, stats and display settings from the
+compare state and the stage viewport instead of the studio, with their orbits kept equal.
 
 ## References rail
 
@@ -130,20 +139,24 @@ there is never overwritten: the same image is not copied again, and a different 
 ## Between the window and the core
 
 The window reaches the core through exactly one interface, `atelier.gui.backend.StudioBackend`: open a project and
-follow its changes, list sources and references, set a status, keep bookmarks, add a reference, convert an export. It
-speaks only in core models and project-relative paths. Today `InProcessBackend` runs the catalog in the app's process
-and its watcher on a thread; the daemon's RPC client will implement the same protocol, so moving to the daemon changes
+follow its changes (catalog and revision events on one stream), list sources and references, set a status, keep
+bookmarks, add a reference, convert an export, read a source's revision history, ask for standard renders, convert a
+revision's export, and restore. It speaks only in core models and project-relative paths, plus absolute paths into the
+state folder (converted models, standard renders, objects). Today `InProcessBackend` runs the catalog and the
+`RevisionTracker` in the app's process and its watcher on a thread; the daemon's RPC client will implement the same protocol, so moving to the daemon changes
 that one module. Images and models are read straight from disk by path either way.
 
-Above it, `atelier.gui.studio.Studio` is the view-model QML binds to (the selection, the filter, the load path), and
-plain functions build the tree (`gui/tree.py`) and the gallery groups (`gui/gallery.py`). Backend calls run off the UI
+Above it, `atelier.gui.studio.Studio` is the view-model QML binds to (the selection, the filter, the load path, the
+staged revision and compare), and plain functions build the tree (`gui/tree.py`), the gallery groups
+(`gui/gallery.py`) and the filmstrip rows (`gui/revisions.py`). Backend calls run off the UI
 thread through `gui/tasks.py`: catalog work in order on one thread, conversions on their own.
 
 ## Development
 
 `atelier --project <p> --source <path> --screenshot <out.png>` renders the window once and quits (also `--export`,
-`--render`, `--lighting clay`, `--wireframe`, `--collision`, `--direct`, `--frame figure`, `--tab`, `--window-size`;
-none of these are in `--help`). Qt's `offscreen` platform has no 3D graphics API, so Quick 3D draws nothing there; by
+`--render`, `--lighting clay`, `--wireframe`, `--collision`, `--direct`, `--frame figure`, `--tab`, `--window-size`,
+and for revisions `--revision <n>`, `--compare renders|models`, `--compare-base <n>`, `--compare-view <view>`; none
+of these are in `--help`). Qt's `offscreen` platform has no 3D graphics API, so Quick 3D draws nothing there; by
 default the window stays hidden on the normal platform and is grabbed offscreen. A hidden window renders no frames,
 so images inside the gallery and the rail mostly never arrive, and only its first grab is reliable. For a faithful
 screenshot add `--screenshot-shown` and launch it where it cannot be seen, such as a silent Hyprland special

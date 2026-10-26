@@ -54,7 +54,8 @@ interrupted (Ctrl+C).
 
 `atelier scan <project>` scans a project into its catalog and lists every source with its builder, README, exports
 and renders. `<project>` is the project's folder or the name of a project scanned before (see the registry in
-`architecture.md`). `--watch` then keeps the catalog live and prints each settled change.
+`architecture.md`). `--watch` then keeps the catalog live and prints each settled change, and records a revision of
+every source a change touches (see `revisions.md`).
 
 The scan writes `.atelier/state.db` and adds `.atelier/` to the project's ignore files; a `--state-dir` inside the
 project is the folder added instead. To look at a project without writing anything into it, pass
