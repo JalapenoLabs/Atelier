@@ -52,8 +52,18 @@ def convert_export(project: Project, export_path: str) -> ConvertedExport:
     absolute_path = project.root / export_path
     if not absolute_path.is_file():
         raise ExportConversionError(f"Export {export_path} does not exist in {project.root}")
+    return convert_file(project, absolute_path, _hash_file(absolute_path), export_path)
 
-    sha256 = _hash_file(absolute_path)
+
+def convert_file(project: Project, export_file: Path, sha256: str, export_path: str) -> ConvertedExport:
+    """Return an FBX whose hash is already known converted to `.glb`, converting it on a cache miss.
+
+    This is how an earlier revision's export is shown: its bytes live in the object store under their hash, with no
+    `.fbx` suffix, which Blender's importer does not need.
+
+    Raises:
+        ExportConversionError: Blender failed on it.
+    """
     cache_dir = project.state_dir / CACHE_DIR_NAME
     glb_path = cache_dir / f"{sha256}.glb"
     stats_path = cache_dir / f"{sha256}.json"
@@ -61,7 +71,7 @@ def convert_export(project: Project, export_path: str) -> ConvertedExport:
     with _conversion_lock(sha256):
         stats = _read_cached_stats(stats_path, glb_path)
         if stats is None:
-            stats = _convert(absolute_path, cache_dir, glb_path, stats_path)
+            stats = _convert(export_file, cache_dir, glb_path, stats_path)
         else:
             logger.debug(f"[Exports] Cache hit for {export_path} ({sha256[:12]})")
 

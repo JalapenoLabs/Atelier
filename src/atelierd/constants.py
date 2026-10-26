@@ -81,3 +81,12 @@ BLENDER_COMMAND_ENV = "ATELIER_BLENDER"
 BLENDER_NICENESS = 10
 # A conversion still running after this long is treated as hung and killed.
 BLENDER_TIMEOUT_S = 300
+
+# ========================================================================================
+# Revisions
+# ========================================================================================
+
+# Standard renders running at once, each a whole headless Blender (itself held to a few threads, at low priority).
+STANDARD_RENDER_WORKERS = 2
+# Revisions per source `atelier prune` keeps unless told otherwise.
+DEFAULT_PRUNE_KEEP = 20
