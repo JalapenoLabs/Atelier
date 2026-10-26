@@ -137,3 +137,22 @@ UNREAL_CONTENT_FOLDER = "Content"
 WORKERS_DIR_NAME = "workers"
 TRANSCRIPTS_DIR_NAME = "transcripts"
 FEEDBACK_DIR_NAME = "feedback"
+
+# ========================================================================================
+# The manager MCP
+# ========================================================================================
+
+# The manager MCP's server name, which is also the name the README adds it under in Claude Code.
+MANAGER_MCP_SERVER_NAME = "atelier"
+# Renders are 1024 px squares. A manager sees them at this edge unless it asks for more, which keeps a look at a few
+# views to a few thousand tokens of its context.
+MANAGER_IMAGE_EDGE = 512
+MANAGER_IMAGE_EDGE_MIN = 128
+MANAGER_IMAGE_EDGE_MAX = 1024
+# How long the image tools wait for pending standard renders, unless told otherwise.
+MANAGER_RENDER_WAIT_S = 120
+# The longest any manager tool waits on a turn or on renders, so a forgotten wait never holds a connection for hours.
+MANAGER_WAIT_MAX_S = 1800
+# Chat items a transcript read returns unless asked for more, and the most it returns.
+MANAGER_TRANSCRIPT_ITEMS = 20
+MANAGER_TRANSCRIPT_ITEMS_MAX = 200

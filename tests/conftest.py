@@ -86,6 +86,18 @@ def wait_until(qt_application: QGuiApplication) -> WaitUntil:
     return wait
 
 
+def wait_for[Value](read: Callable[[], Value], is_done: Callable[[Value], bool], timeout_s: float = 15) -> Value:
+    """Read a value until it is done, failing the test after `timeout_s`."""
+    deadline = time.monotonic() + timeout_s
+    value = read()
+    while not is_done(value):
+        if time.monotonic() > deadline:
+            pytest.fail(f"Timed out waiting; last value: {value!r}")
+        time.sleep(0.05)
+        value = read()
+    return value
+
+
 def launch_fake_blender(blend_file: Path, port: int) -> subprocess.Popen[bytes]:
     """Stand in for a worker's background Blender: a process that serves nothing but listens on `port`."""
     return subprocess.Popen([sys.executable, "-c", _FAKE_BLENDER, str(port)])
