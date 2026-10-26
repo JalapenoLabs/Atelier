@@ -8,10 +8,11 @@ threads (SQLite connections are not).
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 from atelierd.catalog.discovery import discover_sources
-from atelierd.catalog.models import Reference, ScanResult, Source, SourceStatus
-from atelierd.catalog.references import collect_references
+from atelierd.catalog.models import CameraBookmark, Reference, ScanResult, Source, SourceStatus
+from atelierd.catalog.references import add_reference, collect_references
 from atelierd.catalog.store import CatalogStore
 from atelierd.config import load_config
 from atelierd.project import Project, ensure_state_ignored
@@ -61,3 +62,28 @@ class Catalog:
         with CatalogStore(self.project.database_path) as store:
             store.set_status(source_path, status)
         logger.info(f"[Catalog] {self.project.name}: {source_path} is now {status.value}")
+
+    def list_bookmarks(self, source_path: str) -> list[CameraBookmark]:
+        """Return a source's camera bookmarks, sorted by name."""
+        with CatalogStore(self.project.database_path) as store:
+            return store.list_bookmarks(source_path)
+
+    def save_bookmark(self, source_path: str, bookmark: CameraBookmark) -> None:
+        """Save a camera bookmark on a source, replacing any of the same name."""
+        with CatalogStore(self.project.database_path) as store:
+            store.save_bookmark(source_path, bookmark)
+        logger.info(f"[Catalog] {self.project.name}: saved bookmark '{bookmark.name}' on {source_path}")
+
+    def delete_bookmark(self, source_path: str, name: str) -> None:
+        """Delete a source's camera bookmark."""
+        with CatalogStore(self.project.database_path) as store:
+            store.delete_bookmark(source_path, name)
+        logger.info(f"[Catalog] {self.project.name}: deleted bookmark '{name}' on {source_path}")
+
+    def add_reference(self, image: Path) -> str:
+        """Copy an image into the project's reference drop folder and return its project-relative path.
+
+        The new reference is listed from the next scan, which the watcher runs once the copy settles.
+        """
+        config = load_config(self.project.config_path)
+        return add_reference(self.project.root, config, image)

@@ -96,5 +96,7 @@ rail lists every image matched by `references.globs`, tagged by the name of the 
 `Weapons`, `Palette`). Each scan stores them in `state.db`.
 
 - Dragging an image into the rail copies it into `references.drop_folder`, so it is part of the project and versioned.
+  An image of the same name already there is never overwritten: the same bytes are not copied again, and a different
+  image takes the next free name (`concept-2.png`).
 - A prompt can **pin** references; the worker receives their paths with the prompt.
 - A manager can list, search and pin references through MCP (see `mcp.md`).

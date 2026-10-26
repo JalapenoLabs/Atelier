@@ -18,9 +18,13 @@ anything. Its own state lives in a `.atelier/` folder inside the project, which 
 
 ```
 uv sync
+uv run atelier --project /path/to/Project   # open the review window on a project (later just `uv run atelier`)
 uv run atelier scan /path/to/Project        # list every source with its exports and renders
 uv run atelier scan Project --watch         # by name once scanned, and keep the catalog live
 ```
+
+The window converts exports with Blender, so `blender` must be on `PATH` (or named by `ATELIER_BLENDER`). To look at a
+project without writing anything into it, add `--state-root <folder outside it>` (for `scan`, `--state-dir`).
 
 Checks, as CI runs them: `uv run ruff format --check`, `uv run ruff check`, `uv run mypy src tests`, `uv run pytest`.
 

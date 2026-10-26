@@ -45,8 +45,15 @@ jobs:
     name: Python tests
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    env:
+      # GUI tests run Qt without a display. Blender is not installed here, so the tests that need it skip.
+      QT_QPA_PLATFORM: offscreen
     steps:
       - uses: actions/checkout@v6.1.0
+      # The libraries PySide6's Qt loads even on the offscreen platform.
+      - run: >-
+          sudo apt-get update && sudo apt-get install --yes --no-install-recommends
+          libegl1 libgl1 libopengl0 libxkbcommon0 libfontconfig1 libdbus-1-3
       - uses: astral-sh/setup-uv@v10.3.0
         with:
           version: "0.12.13"

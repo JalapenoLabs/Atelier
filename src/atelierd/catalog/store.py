@@ -18,7 +18,14 @@ from pathlib import Path
 from types import TracebackType
 from typing import Self
 
-from atelierd.catalog.models import CatalogChange, DiscoveredSource, Reference, Source, SourceStatus
+from atelierd.catalog.models import (
+    CameraBookmark,
+    CatalogChange,
+    DiscoveredSource,
+    Reference,
+    Source,
+    SourceStatus,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +58,21 @@ _MIGRATIONS: tuple[tuple[str, ...], ...] = (
         CREATE TABLE reference_images (
             path TEXT PRIMARY KEY,
             tag TEXT NOT NULL
+        )
+        """,
+    ),
+    (
+        """
+        CREATE TABLE camera_bookmarks (
+            source_id INTEGER NOT NULL REFERENCES sources (id) ON DELETE CASCADE,
+            name TEXT NOT NULL,
+            target_x_cm REAL NOT NULL,
+            target_y_cm REAL NOT NULL,
+            target_z_cm REAL NOT NULL,
+            yaw_degrees REAL NOT NULL,
+            pitch_degrees REAL NOT NULL,
+            distance_cm REAL NOT NULL,
+            PRIMARY KEY (source_id, name)
         )
         """,
     ),
@@ -116,9 +138,65 @@ class CatalogStore:
         rows = self._connection.execute("SELECT path, tag FROM reference_images ORDER BY path").fetchall()
         return [Reference(path=row["path"], tag=row["tag"]) for row in rows]
 
+    def list_bookmarks(self, source_path: str) -> list[CameraBookmark]:
+        """Return a present source's camera bookmarks, sorted by name.
+
+        Raises:
+            KeyError: the catalog has no present source at `source_path`.
+        """
+        rows = self._connection.execute(
+            "SELECT * FROM camera_bookmarks WHERE source_id = ? ORDER BY name",
+            (self._present_source_id(source_path),),
+        ).fetchall()
+        return [
+            CameraBookmark(
+                name=row["name"],
+                target_cm=(row["target_x_cm"], row["target_y_cm"], row["target_z_cm"]),
+                yaw_degrees=row["yaw_degrees"],
+                pitch_degrees=row["pitch_degrees"],
+                distance_cm=row["distance_cm"],
+            )
+            for row in rows
+        ]
+
     # ####################### #
     #         WRITES          #
     # ####################### #
+
+    def save_bookmark(self, source_path: str, bookmark: CameraBookmark) -> None:
+        """Save a camera bookmark on a present source, replacing any of the same name.
+
+        Raises:
+            KeyError: the catalog has no present source at `source_path`.
+        """
+        target_x, target_y, target_z = bookmark.target_cm
+        self._connection.execute(
+            "INSERT OR REPLACE INTO camera_bookmarks (source_id, name, target_x_cm, target_y_cm, target_z_cm, "
+            "yaw_degrees, pitch_degrees, distance_cm) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                self._present_source_id(source_path),
+                bookmark.name,
+                target_x,
+                target_y,
+                target_z,
+                bookmark.yaw_degrees,
+                bookmark.pitch_degrees,
+                bookmark.distance_cm,
+            ),
+        )
+
+    def delete_bookmark(self, source_path: str, name: str) -> None:
+        """Delete a source's camera bookmark.
+
+        Raises:
+            KeyError: the catalog has no present source at `source_path`, or it has no bookmark of that name.
+        """
+        cursor = self._connection.execute(
+            "DELETE FROM camera_bookmarks WHERE source_id = ? AND name = ?",
+            (self._present_source_id(source_path), name),
+        )
+        if cursor.rowcount == 0:
+            raise KeyError(f"Source '{source_path}' has no bookmark '{name}'")
 
     def set_status(self, path: str, status: SourceStatus) -> None:
         """Set a present source's review status.
@@ -209,6 +287,16 @@ class CatalogStore:
                 self._connection.execute("ROLLBACK")
                 raise
             logger.info(f"[Store] Migrated state.db to schema version {version}")
+
+    def _present_source_id(self, path: str) -> int:
+        row = self._connection.execute(
+            "SELECT id FROM sources WHERE path = ? AND missing_since IS NULL",
+            (path,),
+        ).fetchone()
+        if row is None:
+            raise KeyError(f"No present source '{path}'")
+        source_id: int = row["id"]
+        return source_id
 
     def _outputs_by_source(self, source_id: int | None = None) -> dict[int, dict[str, list[str]]]:
         """Return each source's output paths grouped by kind, for one source or all of them."""

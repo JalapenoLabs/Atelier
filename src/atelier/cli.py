@@ -1,5 +1,8 @@
 """The `atelier` command line.
 
+`atelier` on its own opens the desktop app (`--project` opens a project at start, `--state-root` keeps every
+project's state outside the projects).
+
 `atelier scan <project>` scans a project into its catalog and lists every source with its exports and renders.
 `<project>` is a path to the project's folder or the name of a project scanned before. With `--watch` it then keeps
 the catalog live and prints each settled change until interrupted.
@@ -37,6 +40,9 @@ def main(argv: list[str] | None = None) -> int:
     log_level = _LOG_LEVEL_BY_VERBOSITY[min(arguments.verbose, 2)]
     logging.basicConfig(level=log_level, format="%(levelname)s %(name)s: %(message)s", stream=sys.stderr)
 
+    if arguments.command is None:
+        return _run_gui(arguments)
+
     try:
         return _scan(arguments)
     except (ConfigError, RegistryError, NotADirectoryError) as error:
@@ -45,8 +51,20 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="atelier", description="A native review studio for AI-built 3D art.")
-    subparsers = parser.add_subparsers(dest="command", required=True)
+    parser = argparse.ArgumentParser(
+        prog="atelier",
+        description="A native review studio for AI-built 3D art. Without a command, opens the desktop app.",
+    )
+    parser.add_argument("--project", help="Open this project at start: its folder, or the name of a known project.")
+    parser.add_argument(
+        "--state-root",
+        type=Path,
+        help="Keep each project's state in <state-root>/<project name>/ instead of <project>/.atelier/, so nothing "
+        "is written into the projects.",
+    )
+    parser.add_argument("-v", "--verbose", action="count", default=0, help="Log more (-v info, -vv debug).")
+    _add_screenshot_arguments(parser)
+    subparsers = parser.add_subparsers(dest="command")
 
     scan_parser = subparsers.add_parser("scan", help="Scan a project and list its sources.")
     scan_parser.add_argument("project", help="The project's folder, or the name of a project scanned before.")
@@ -63,6 +81,55 @@ def _build_parser() -> argparse.ArgumentParser:
     scan_parser.add_argument("--watch", action="store_true", help="Keep the catalog live and print each change.")
     scan_parser.add_argument("-v", "--verbose", action="count", default=0, help="Log more (-v info, -vv debug).")
     return parser
+
+
+def _add_screenshot_arguments(parser: argparse.ArgumentParser) -> None:
+    """Development flags, left out of `--help`: render the window once to a PNG without showing it."""
+    parser.add_argument("--screenshot", type=Path, help=argparse.SUPPRESS)
+    parser.add_argument("--screenshot-shown", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--source", help=argparse.SUPPRESS)
+    parser.add_argument("--export", help=argparse.SUPPRESS)
+    parser.add_argument("--render", help=argparse.SUPPRESS)
+    parser.add_argument("--lighting", choices=("studio", "clay"), help=argparse.SUPPRESS)
+    parser.add_argument("--wireframe", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--collision", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--direct", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--tab", choices=("chat", "refs", "readme"), help=argparse.SUPPRESS)
+    parser.add_argument("--frame", choices=("model", "figure"), help=argparse.SUPPRESS)
+    parser.add_argument("--window-size", default="1600x1000", help=argparse.SUPPRESS)
+
+
+def _run_gui(arguments: argparse.Namespace) -> int:
+    # Imported here so that `atelier scan` never loads Qt.
+    from atelier.gui.app import GuiOptions, run_gui
+
+    # Only flags actually given, so they never override the settings the window remembers.
+    view_options: dict[str, object] = {
+        name: value
+        for name, value in (
+            ("lighting", arguments.lighting),
+            ("wireframe", arguments.wireframe),
+            ("collision", arguments.collision),
+            ("direct", arguments.direct),
+            ("tab", arguments.tab),
+            ("frame", arguments.frame),
+        )
+        if value
+    }
+
+    width, _, height = arguments.window_size.partition("x")
+    options = GuiOptions(
+        project=arguments.project,
+        state_root=arguments.state_root,
+        screenshot=arguments.screenshot,
+        is_screenshot_shown=arguments.screenshot_shown,
+        source=arguments.source,
+        export=arguments.export,
+        render=arguments.render,
+        view_options=view_options,
+        window_size=(int(width), int(height)),
+    )
+    return run_gui(options)
 
 
 def _scan(arguments: argparse.Namespace) -> int:
