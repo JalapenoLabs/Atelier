@@ -23,26 +23,33 @@ A three-pane studio:
 │ filter…      │  ┌ stats ┐               [Studio Clay … Views ▾]     │                        │
 │ All statuses │  │ 3D viewport, a render, compare, or markup       │ │ worker chat, composer  │
 │ ▾ Weapons    │  └────────────────────────────────────────────────┘ │                        │
-│   ● Carbine  │  render gallery: standard renders, then by stem      │                        │
-│              │  revision filmstrip     [Newest] [Compare] [Restore] │                        │
+│  ▾● Carbine 2│  render gallery: standard renders, then by stem      │                        │
+│     SK_Carb… │  revision filmstrip     [Newest] [Compare] [Restore] │                        │
 └──────────────┴──────────────────────────────────────────────────────┴────────────────────────┘
 ```
 
 - **Header**: the project picker (every project in the machine's registry), the latest status message, and the
   approvals badge: every project's worker tool calls waiting for you, listed as approval cards in its popup
   (see `workers.md`).
-- **Sources** (left): the catalog as a tree mirroring the folders, each source with its status colour and export
-  count. A top folder every source shares (`SourceArt/`) is left out, and a folder holding only a source of its own
-  name (`Carbine/Carbine.blend`) shows as that source. Filters by text (anywhere in the path) and by status; while
-  text is filtered every folder shows open.
+- **Sources** (left): the catalog as a file tree: folders, then sources, then each source's exports as its
+  children. A top folder every source shares (`SourceArt/`) is left out, and a folder holding only a source of its
+  own name (`Carbine/Carbine.blend`) shows as that source. A source row carries its status colour and export count.
+  Folders start open and sources closed; what you open and close is remembered per project. Clicking an export
+  selects its source and shows that export on the stage, as the Export picker does; clicking a source shows its first
+  export; the arrow, or a double click on a source, opens and closes a row. The keyboard works as in any tree: Up,
+  Down, Page Up, Page Down, Home and End move, Right opens a row or steps into it, Left closes it or steps out to its
+  parent, and Enter or Space acts as a click. Filters by text and by status. The text matches anywhere in a source's
+  path or in an export's name; while text is filtered every folder shows open, and a source whose exports match
+  shows open with just those exports.
 - **Stage** (centre): the selected source's name, its status (settable here) and the export picker, over the 3D
   viewport, a render full size, or two revisions compared side by side, with the render gallery and the revision
   filmstrip under it (see `revisions.md`).
 - **Context** (right): tabs for the source's worker chat (see `workers.md`), the references rail, and its README
   rendered as Markdown.
 
-Panel sizes, the selected tab, the last project and the viewport's display settings are remembered per machine, in
-Qt's settings (`~/.config/JalapenoLabs/Atelier.conf`). Everything else the window shows comes from the core.
+Panel sizes, the selected tab, the last project, the viewport's display settings and each project's open tree rows
+(`sourceTree/<project>/`) are remembered per machine, in Qt's settings (`~/.config/JalapenoLabs/Atelier.conf`).
+Everything else the window shows comes from the core.
 
 ## 3D viewport
 
@@ -155,7 +162,8 @@ objects, transcript and feedback images). `RpcBackend` implements it over the da
 `architecture.md`). Images and models are read straight from disk by path, never sent over the socket.
 
 Above it, `atelier.gui.studio.Studio` is the view-model QML binds to (the daemon's state, the selection, the filter,
-the load path, the staged revision and compare, the approvals list), with `gui/chat.py` (the selected source's worker
+the tree's open rows and the row the keyboard is on, the load path, the staged revision and compare, the approvals
+list), with `gui/chat.py` (the selected source's worker
 and chat) and `gui/markup.py` (the markup editor, and flattening markup onto its image) beside it, and plain
 functions build the tree (`gui/tree.py`), the gallery groups (`gui/gallery.py`) and the filmstrip rows
 (`gui/revisions.py`). Backend calls run off the UI thread through `gui/tasks.py`: catalog work in order on one
