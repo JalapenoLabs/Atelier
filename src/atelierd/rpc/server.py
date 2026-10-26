@@ -56,6 +56,8 @@ class _Connection:
         self.subscribed_project: str | None = None
         # Requests in flight, held so the loop never drops a task it only weakly references.
         self.tasks: set[asyncio.Task[None]] = set()
+        # Writes every outgoing line, and closes the connection once it is told to stop.
+        self.writer_task: asyncio.Task[None] | None = None
 
     def send(self, message: dict[str, Any]) -> None:
         self.outgoing.put_nowait(json.dumps(message).encode() + b"\n")
@@ -103,9 +105,15 @@ class RpcServer:
             self._unsubscribe()
         if self._server:
             self._server.close()
-        for connection in list(self._connections):
+        connections = list(self._connections)
+        for connection in connections:
             connection.outgoing.put_nowait(None)
+        # Each writer closes its connection once it has sent what was queued, so every client hears the end now.
+        writer_tasks = [connection.writer_task for connection in connections if connection.writer_task]
+        await asyncio.gather(*writer_tasks, return_exceptions=True)
         if self._server:
+            # A client accepted a moment ago may have no handler running yet; its connection is closed here.
+            self._server.close_clients()
             await self._server.wait_closed()
         self._info.socket_path.unlink(missing_ok=True)
         logger.info("[RPC] Closed")
@@ -118,6 +126,7 @@ class RpcServer:
         connection = _Connection(writer)
         self._connections.add(connection)
         writer_task = asyncio.create_task(self._write_lines(connection))
+        connection.writer_task = writer_task
         logger.debug(f"[RPC] A client connected ({len(self._connections)} now)")
         try:
             while line := await reader.readline():

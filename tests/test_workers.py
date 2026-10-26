@@ -297,6 +297,24 @@ class TestTwoWorkers:
 
 
 class TestBrief:
+    def test_a_restore_is_announced_to_the_next_turn_only(self, session: Session) -> None:
+        source = protocol.SourceParams(project=session.project, source=CARBINE)
+        first = wait_for(
+            lambda: session.client.call(protocol.GET_HISTORY, source), lambda history: bool(history.revisions)
+        )
+        restore = protocol.RestoreParams(project=session.project, source=CARBINE, revision_id=first.revisions[0].id)
+        session.client.call(protocol.RESTORE, restore)
+
+        session.prompt("SAY after the restore")
+        told = session.wait_idle()
+        assert "restored this source to r1" in told.items[1].detail
+        history = session.client.call(protocol.GET_HISTORY, source)
+        assert history.restore_mark is None
+
+        session.prompt("SAY later")
+        later = session.wait_idle(results=2)
+        assert "restored" not in later.items[-3].detail
+
     def test_pinned_references_ride_along_once(self, session: Session) -> None:
         pinned = session.client.call(
             protocol.PIN_REFERENCES,
