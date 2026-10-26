@@ -64,6 +64,14 @@ class TestEnsureStateIgnored:
         assert ensure_state_ignored(open_project(tmp_path)) == []
         assert list(tmp_path.iterdir()) == []
 
+    def test_a_state_dir_inside_the_project_is_the_folder_ignored(self, project_root: Path) -> None:
+        project = open_project(project_root, state_dir=project_root / "review-state")
+        assert ensure_state_ignored(project) == [project_root / ".dvignore"]
+        lines = (project_root / ".dvignore").read_text(encoding="utf-8").splitlines()
+        assert lines[-1] == "review-state/"
+        assert ".atelier/" not in lines
+        assert ensure_state_ignored(project) == []
+
     def test_state_outside_the_project_needs_no_entry(self, project_root: Path, tmp_path: Path) -> None:
         before = (project_root / ".dvignore").read_text(encoding="utf-8")
         project = open_project(project_root, state_dir=tmp_path / "state")

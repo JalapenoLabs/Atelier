@@ -4,7 +4,9 @@ The watcher watches the configured roots, the folders references and output over
 `atelier.toml` itself. A batch of changes is held until it has been quiet for `settle_ms`, so a Blender save (a
 temporary file and a rename) or a builder writing dozens of exports becomes one rescan, not hundreds.
 
-Editing `atelier.toml` can move the roots, so whenever the set of paths to watch changes the watch restarts on it.
+Editing `atelier.toml` can move the roots, and saving it by rename ends the watch on the old file, so a change to it,
+or to the set of paths to watch, restarts the watch. Every (re)start rescans first, so nothing that changed while
+no watch was running is missed.
 """
 
 from __future__ import annotations
@@ -54,14 +56,19 @@ class CatalogWatcher:
         self._on_event = on_event
         self._settle_ms = settle_ms
         self._max_batch_ms = max_batch_ms
+        # The sources as of the last rescan, to know which files a source had before a change removed them.
+        self._known_sources: tuple[Source, ...] = ()
 
     def run(self, stop_event: threading.Event) -> None:
-        """Watch until `stop_event` is set. Blocks; run it on its own thread."""
+        """Watch until `stop_event` is set or the watch is interrupted (Ctrl+C). Blocks; run it on its own thread."""
         project = self._catalog.project
         while not stop_event.is_set():
             watch_paths = self._watch_paths()
             logger.info(f"[Watcher] Watching {project.name}: {', '.join(str(path) for path in watch_paths)}")
+            # Catch up on anything that changed before this watch started, including while it restarted.
+            self._rescan(changed_paths=set())
 
+            is_restart_needed = False
             for changes in watch(
                 *watch_paths,
                 watch_filter=self._is_relevant,
@@ -70,32 +77,48 @@ class CatalogWatcher:
                 stop_event=stop_event,
                 raise_interrupt=False,
             ):
-                self._handle_batch({Path(changed_path) for _, changed_path in changes})
-                # An edited atelier.toml, or a newly created reference folder, changes what has to be watched.
-                if self._watch_paths() != watch_paths:
-                    logger.info(f"[Watcher] The paths to watch in {project.name} changed, restarting the watch")
+                changed_paths = {Path(changed_path) for _, changed_path in changes}
+                self._rescan(changed_paths)
+                # An editor saves atelier.toml by renaming a new file over it, which ends the watch on the old one,
+                # and an edit can move the roots; either way the watch starts again on the current paths.
+                is_restart_needed = project.config_path in changed_paths or self._watch_paths() != watch_paths
+                if is_restart_needed:
+                    logger.info(f"[Watcher] Restarting the watch on {project.name}")
                     break
+
+            # watchfiles ends the watch on its own only when stopped or interrupted: then the watcher is done too.
+            if not is_restart_needed:
+                logger.info(f"[Watcher] Stopped watching {project.name}")
+                return
 
     # -----------------------------------------------------------------------------
     # Internals
     # -----------------------------------------------------------------------------
 
-    def _handle_batch(self, changed_paths: set[Path]) -> None:
+    def _rescan(self, changed_paths: set[Path]) -> None:
         """Rescan after one settled batch and report the result, when it changed anything."""
+        project = self._catalog.project
         try:
             result = self._catalog.scan()
-        except ConfigError as error:
-            # A half-typed atelier.toml must not kill the watcher; the next save of a valid config rescans.
-            logger.error(f"[Watcher] Not rescanning {self._catalog.project.name}: {error}")
+        except Exception as error:
+            # A half-typed atelier.toml, a folder deleted mid-walk or a briefly locked state.db must not end the
+            # watcher; the next settled batch rescans.
+            logger.exception(f"[Watcher] Rescanning {project.name} failed, waiting for the next change: {error}")
             return
 
-        project_root = self._catalog.project.root
         relative_paths = {
-            changed_path.relative_to(project_root).as_posix()
+            changed_path.relative_to(project.root).as_posix()
             for changed_path in changed_paths
-            if changed_path.is_relative_to(project_root)
+            if changed_path.is_relative_to(project.root)
         }
-        touched = tuple(source.path for source in result.sources if relative_paths & _files_of(source))
+        # A deleted export is gone from the rescanned source, so its files before the scan count too.
+        previous_files = {source.path: _files_of(source) for source in self._known_sources}
+        touched = tuple(
+            source.path
+            for source in result.sources
+            if relative_paths & (_files_of(source) | previous_files.get(source.path, set()))
+        )
+        self._known_sources = result.sources
 
         event = CatalogEvent(change=result.change, touched=touched)
         if event.change.is_empty and not event.touched:

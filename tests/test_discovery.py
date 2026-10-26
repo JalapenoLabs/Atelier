@@ -44,6 +44,12 @@ class TestWhatIsASource:
         paths = [source.path for source in sources]
         assert paths == sorted(paths)
 
+    def test_overlapping_roots_find_each_source_once(self, project_root: Path) -> None:
+        config = AtelierConfig(roots=("SourceArt", "SourceArt/Weapons", "SourceArt"))
+        sources, _ = discover_sources(project_root, config)
+        paths = [source.path for source in sources]
+        assert len(paths) == len(set(paths)) == 7
+
     def test_a_missing_root_is_skipped(self, project_root: Path) -> None:
         config = AtelierConfig(roots=("SourceArt", "NoSuchFolder"))
         sources, _ = discover_sources(project_root, config)
@@ -105,6 +111,18 @@ class TestBuilderAndReadme:
         assert sources[DECK_KIT].builder == "SourceArt/Ship/build_deck_kit.py"
         assert sources[HULL].builder == "SourceArt/Ship/build_hull.py"
         assert sources[ROOMS].builder == "SourceArt/Rooms/build_rooms.py"
+
+    def test_one_builder_in_a_shared_folder_is_not_every_kit_s(self, project_root: Path) -> None:
+        (project_root / "SourceArt/Ship/build_deck_kit.py").unlink()
+        sources = _discover(project_root)
+        assert sources[DECK_KIT].builder is None
+        assert sources[HULL].builder == "SourceArt/Ship/build_hull.py"
+
+    def test_the_longest_kit_name_owns_a_builder(self, project_root: Path) -> None:
+        (project_root / "SourceArt/Rooms/Dining.blend").touch()
+        sources = _discover(project_root)
+        assert sources["SourceArt/Rooms/Dining.blend"].builder is None
+        assert sources[DINING_SPA].builder == "SourceArt/Rooms/build_dining_spa_rooms.py"
 
     def test_a_builder_may_extend_the_kit_name(self, project_root: Path) -> None:
         assert _discover(project_root)[DINING_SPA].builder == "SourceArt/Rooms/build_dining_spa_rooms.py"

@@ -32,17 +32,23 @@ Atelier finds sources by convention, with no config needed for the common layout
 - A folder can hold several kits (CruiseTycoon's `Ship/` holds `DeckKit.blend` and `Hull.blend`). A file named after
   one of them (`Hull_preview_port.png`, `DeckKit_pieces.png`) belongs to that kit alone; the folder's other files,
   such as a shared `Export/`, belong to each kit in it. A `[sources."…"].outputs` override separates them exactly.
-- Its builder is the one `build_*.py` in the same folder. In a folder of several kits, each `.blend` pairs with the
-  builder named after it: `DeckKit.blend` with `build_deck_kit.py`, or failing that the one `build_deck_kit_*.py`
-  (`DiningSpa.blend` with `build_dining_spa_rooms.py`). Failing both, the builder is the script its README's rebuild
-  command runs with `--python` (AnchorFall's `SourceArt/_lib/run_asset.py`).
+- Its builder is the one `build_*.py` in the same folder. Otherwise, as in a folder of several kits, each `.blend`
+  pairs with the builder named after it: `DeckKit.blend` with `build_deck_kit.py`, or failing that its one
+  `build_deck_kit_*.py` (`DiningSpa.blend` with `build_dining_spa_rooms.py`). A script goes to the longest kit name it
+  matches, so `build_dining_spa_rooms.py` never goes to a `Dining.blend` beside it, and a kit no script is named
+  after gets none of its neighbours'. Failing all that, the builder is the script its README's rebuild command runs
+  with `--python` (AnchorFall's `SourceArt/_lib/run_asset.py`).
+- Roots may overlap; each folder is still read once, so every source is listed once.
 - Its README is the `README.md` in its folder.
 
 A file watcher keeps the catalog live. It watches the roots, the folders `references.globs` and `outputs` overrides
 draw from, and `atelier.toml`. A batch of changes is held until it has been quiet for 1.5 seconds (and at most 30
 seconds), then the catalog rescans. Each settled batch reports the sources added, removed or changed, and the sources
-one of whose files was written, which is what revisions are recorded from. Changes to `.blend1`/`.blend2`/`.blend@`
-backups, `_` folders and `.atelier/` are ignored. Editing `atelier.toml` rescans and re-points the watch.
+one of whose files was written or deleted, which is what revisions are recorded from. Changes to
+`.blend1`/`.blend2`/`.blend@` backups, `_` folders and `.atelier/` are ignored. Saving `atelier.toml`, in place or by
+rename, rescans and restarts the watch on the current paths; every start of the watch rescans first, so nothing
+changed in between is missed. A failed rescan is logged and the watch goes on. The watch ends when it is stopped or
+interrupted (Ctrl+C).
 
 ## Scanning
 
@@ -50,8 +56,9 @@ backups, `_` folders and `.atelier/` are ignored. Editing `atelier.toml` rescans
 and renders. `<project>` is the project's folder or the name of a project scanned before (see the registry in
 `architecture.md`). `--watch` then keeps the catalog live and prints each settled change.
 
-The scan writes `.atelier/state.db` and adds `.atelier/` to the project's ignore files. To look at a project without
-writing anything into it, pass `--state-dir <folder outside the project>`, which also leaves its ignore files alone,
+The scan writes `.atelier/state.db` and adds `.atelier/` to the project's ignore files; a `--state-dir` inside the
+project is the folder added instead. To look at a project without writing anything into it, pass
+`--state-dir <folder outside the project>`, which also leaves its ignore files alone,
 and `--config <file>` to try an `atelier.toml` before committing it to the project.
 
 ## `atelier.toml`
