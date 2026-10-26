@@ -613,8 +613,9 @@ class Studio(QObject):
     @Slot(list)
     def addReferences(self, urls: list[Any]) -> None:
         """Copy dropped image files into the project's reference drop folder."""
-        image_paths = [Path(QUrl(str(url)).toLocalFile()) for url in urls]
-        local_paths = [path for path in image_paths if str(path) not in ("", ".")]
+        # QML's `drop.urls` arrive as QUrl objects; `str()` of one is its repr, not the URL, so take them as they are.
+        qt_urls = [url if isinstance(url, QUrl) else QUrl(str(url)) for url in urls]
+        local_paths = [Path(url.toLocalFile()) for url in qt_urls if url.isLocalFile()]
         if not local_paths:
             self._show_message("Only local image files can be added as references")
             return

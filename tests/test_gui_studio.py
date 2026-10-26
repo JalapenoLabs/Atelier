@@ -7,6 +7,7 @@ from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
+from PySide6.QtCore import QUrl
 
 from atelier.gui.studio import LoadPath, Studio
 from atelier.gui.tasks import TaskRunner
@@ -273,3 +274,21 @@ class TestBookmarksAndReferences:
         studio.addReferences([image.as_uri()])
         wait_until(lambda: len(studio.property("referenceRows").rows) == 2)
         assert backend.added_images == [image]
+
+    def test_images_dropped_from_qml_arrive_as_qurls(
+        self,
+        studio: Studio,
+        backend: FakeBackend,
+        tmp_path: Path,
+        wait_until: WaitUntil,
+    ) -> None:
+        image = tmp_path / "dropped.png"
+        image.write_bytes(b"png")
+        studio.addReferences([QUrl.fromLocalFile(str(image))])
+        wait_until(lambda: len(studio.property("referenceRows").rows) == 2)
+        assert backend.added_images == [image]
+
+    def test_a_remote_url_is_not_added(self, studio: Studio, backend: FakeBackend) -> None:
+        studio.addReferences([QUrl("https://example.com/concept.png")])
+        assert backend.added_images == []
+        assert "local image" in studio.property("message")

@@ -100,7 +100,7 @@ the distance in cm.
 - **Studio** lighting: three directional lights fixed to the camera (a key from above left, a fill from the right, a
   rim from behind), so a model reads the same from every side. **Clay** keeps the lights and swaps every material for
   a neutral grey.
-- **Wireframe** over the shaded model.
+- **Wireframe**: every mesh drawn as its triangle edges only (Qt Quick 3D's wireframe debug mode), the figure too.
 - **Collision**: `UCX_*` hulls are hidden by default and shown as a translucent green overlay.
 - **Stats** (top left): triangles and materials (collision hulls left out), the bounds in centimetres along Unreal's
   X, Y and Z, the number of collision hulls, whether the mesh is skinned, the load path and the grid spacing. They
