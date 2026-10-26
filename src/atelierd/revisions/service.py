@@ -60,7 +60,7 @@ class SourceBusyError(Exception):
 
 
 def _no_source_is_busy(source_path: str) -> bool:
-    """Until workers exist, nothing else ever writes a source's files on Atelier's behalf."""
+    """Outside the daemon (the `atelier` command line), no worker ever writes a source's files."""
     return False
 
 
@@ -72,7 +72,8 @@ class Revisions:
 
         Args:
             project: the project whose revisions these are.
-            is_source_busy: whether a worker is running on a source; a restore is refused while one is.
+            is_source_busy: whether a worker turn is running on a source. A restore is refused while one is, and the
+                daemon's watcher leaves the turn's changes to the revision recorded when the turn ends.
         """
         self.project = project
         self.objects = ObjectStore(project.state_dir / OBJECTS_DIR_NAME)
@@ -80,6 +81,10 @@ class Revisions:
         self._is_source_busy = is_source_busy
         self._locks_guard = threading.Lock()
         self._source_locks: dict[str, threading.Lock] = {}
+
+    def is_source_busy(self, source_path: str) -> bool:
+        """Whether a worker turn is running on a source right now."""
+        return self._is_source_busy(source_path)
 
     # ####################### #
     #        RECORDING        #

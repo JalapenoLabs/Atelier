@@ -8,9 +8,11 @@ from pathlib import Path
 
 import pytest
 from PySide6.QtCore import QUrl
+from PySide6.QtGui import QColor, QImage
 
-from atelier.gui.backend import StudioEvent
-from atelier.gui.studio import LoadPath, Studio
+from atelier.gui.backend import DaemonDisconnected, StudioEvent
+from atelier.gui.markup import flatten_markup
+from atelier.gui.studio import DaemonState, LoadPath, Studio
 from atelier.gui.tasks import TaskRunner
 from atelierd.catalog import (
     CameraBookmark,
@@ -34,6 +36,25 @@ from atelierd.revisions import (
     RevisionTrigger,
     SourceHistory,
     StandardRenderSet,
+)
+from atelierd.rpc.protocol import DaemonInfo
+from atelierd.workers import (
+    Approval,
+    ApprovalEvent,
+    ApprovalStatus,
+    ChatItem,
+    ChatItemKind,
+    Feedback,
+    FeedbackRequest,
+    Markup,
+    Pin,
+    Stroke,
+    StrokeTool,
+    WorkerEvent,
+    WorkerEventKind,
+    WorkerInfo,
+    WorkerSnapshot,
+    WorkerStatus,
 )
 
 WaitUntil = Callable[[Callable[[], bool]], None]
@@ -69,19 +90,35 @@ class FakeBackend:
         self.histories: dict[str, SourceHistory] = {}
         self.requested_renders: list[tuple[int, str]] = []
         self.restores: list[tuple[str, int]] = []
+        self.workers: dict[str, WorkerSnapshot] = {}
+        self.prompts: list[tuple[str, str, int | None]] = []
+        self.pinned: dict[str, list[str]] = {}
+        self.feedback_requests: list[FeedbackRequest] = []
+        self.approvals: list[Approval] = []
+        self.answers: list[tuple[str, bool, str]] = []
+        self.is_daemon_running = True
 
     @property
     def project_name(self) -> str:
         return "Fake"
 
+    def connect(self, on_event: Callable[[StudioEvent], None]) -> DaemonInfo:
+        if not self.is_daemon_running:
+            raise ConnectionError("No daemon")
+        self.on_event = on_event
+        return DaemonInfo(pid=1, socket_path=self.root / "atelier.sock", http_port=0)
+
+    def start_daemon(self) -> str:
+        self.is_daemon_running = True
+        return "Started"
+
     def list_projects(self) -> list[str]:
         return ["Fake"]
 
-    def open_project(self, reference: str, on_event: Callable[[StudioEvent], None]) -> ScanResult:
-        self.on_event = on_event
+    def open_project(self, reference: str) -> ScanResult:
         return ScanResult(sources=tuple(self.sources), references=tuple(self.references), change=CatalogChange())
 
-    def close_project(self) -> None:
+    def close(self) -> None:
         self.on_event = None
 
     def resolve(self, project_path: str) -> Path:
@@ -149,6 +186,50 @@ class FakeBackend:
         target = next(revision for revision in history.revisions if revision.id == revision_id)
         return RestoreResult(target=target, pre_restore=history.revisions[0], restored=history.revisions[0])
 
+    def get_worker(self, source_path: str) -> WorkerSnapshot:
+        pinned = tuple(self.pinned.get(source_path, []))
+        snapshot = self.workers.get(source_path, WorkerSnapshot(info=WorkerInfo(source=source_path)))
+        return snapshot.model_copy(update={"info": snapshot.info.model_copy(update={"pinned_references": pinned})})
+
+    def send_prompt(self, source_path: str, prompt: str, feedback_id: int | None = None) -> ChatItem:
+        self.prompts.append((source_path, prompt, feedback_id))
+        return ChatItem(index=0, kind=ChatItemKind.USER, created_at="2026-10-26T12:00:00+00:00", text=prompt)
+
+    def interrupt(self, source_path: str) -> None:
+        pass
+
+    def new_session(self, source_path: str) -> None:
+        self.workers.pop(source_path, None)
+
+    def stop_worker(self, source_path: str) -> None:
+        pass
+
+    def pin_references(self, source_path: str, reference_paths: list[str]) -> list[str]:
+        self.pinned[source_path] = sorted(reference_paths)
+        return self.pinned[source_path]
+
+    def create_feedback(self, request: FeedbackRequest) -> Feedback:
+        self.feedback_requests.append(request)
+        folder = self.root / "feedback" / "1"
+        return Feedback(
+            id=1,
+            source=request.source,
+            created_at="2026-10-26T12:00:00+00:00",
+            folder=folder,
+            capture_path=folder / "capture.png",
+            annotated_path=folder / "annotated.png",
+            pins=request.markup.pins,
+        )
+
+    def list_approvals(self) -> list[Approval]:
+        return list(self.approvals)
+
+    def answer_approval(self, approval_id: str, is_allowed: bool, message: str) -> Approval:
+        self.answers.append((approval_id, is_allowed, message))
+        approval = next(approval for approval in self.approvals if approval.id == approval_id)
+        status = ApprovalStatus.ALLOWED if is_allowed else ApprovalStatus.DENIED
+        return approval.model_copy(update={"status": status})
+
     def release(self, export_path: str) -> None:
         self.released_conversions.setdefault(export_path, threading.Event()).set()
 
@@ -165,7 +246,9 @@ def backend(tmp_path: Path) -> Iterator[FakeBackend]:
 @pytest.fixture
 def studio(backend: FakeBackend, wait_until: WaitUntil) -> Studio:
     studio = Studio(backend, TaskRunner())
+    # Asked for before the daemon answers, as the window's remembered project is: it opens once connected.
     studio.openProject("Fake")
+    studio.connectDaemon()
     wait_until(lambda: studio.property("projectName") == "Fake")
     return studio
 
@@ -498,3 +581,165 @@ class TestRevisions:
         backend.on_event(RevisionEvent(kind=RevisionEventKind.RECORDED, source=CARBINE, revision_id=12))
 
         wait_until(lambda: len(studio.property("revisionRows").rows) == 2)
+
+
+def _chat_item(index: int, kind: ChatItemKind, **fields: object) -> ChatItem:
+    return ChatItem(index=index, kind=kind, created_at="2026-10-26T12:00:00+00:00", **fields)
+
+
+class TestDaemon:
+    def test_with_no_daemon_the_window_offers_to_start_one(self, backend: FakeBackend, wait_until: WaitUntil) -> None:
+        backend.is_daemon_running = False
+        studio = Studio(backend, TaskRunner())
+        studio.openProject("Fake")
+        studio.connectDaemon()
+        wait_until(lambda: studio.property("daemonState") == DaemonState.MISSING)
+        assert studio.property("projectName") == ""
+
+        studio.startDaemon()
+        wait_until(lambda: studio.property("projectName") == "Fake")
+        assert studio.property("daemonState") == DaemonState.CONNECTED
+
+    def test_losing_the_daemon_says_so(self, studio: Studio, backend: FakeBackend, wait_until: WaitUntil) -> None:
+        assert backend.on_event is not None
+        backend.on_event(DaemonDisconnected(socket_path=backend.root / "atelier.sock"))
+        wait_until(lambda: studio.property("daemonState") == DaemonState.MISSING)
+
+
+class TestChat:
+    def test_selecting_a_source_loads_its_chat_and_events_stream_into_it(
+        self,
+        studio: Studio,
+        backend: FakeBackend,
+        wait_until: WaitUntil,
+    ) -> None:
+        info = WorkerInfo(source=CARBINE, status=WorkerStatus.IDLE, session_id="abcdef1234")
+        backend.workers[CARBINE] = WorkerSnapshot(
+            info=info,
+            items=(_chat_item(0, ChatItemKind.USER, text="Longer magazine"),),
+        )
+        studio.selectSource(CARBINE)
+        chat = studio.chat
+        wait_until(lambda: len(chat.property("rows").rows) == 1)
+        assert chat.property("statusLabel") == "Idle"
+        assert chat.property("sessionLabel") == "Session abcdef12"
+
+        assert backend.on_event is not None
+        running = info.model_copy(update={"status": WorkerStatus.RUNNING})
+        tool = _chat_item(1, ChatItemKind.TOOL, tool_name="Bash", tool_summary="blender -b ...")
+        backend.on_event(WorkerEvent(kind=WorkerEventKind.ITEM, source=CARBINE, info=running, item=tool))
+        wait_until(lambda: len(chat.property("rows").rows) == 2)
+        assert chat.property("isTurnRunning")
+
+        done = tool.model_copy(update={"is_done": True, "tool_output": "Saved"})
+        backend.on_event(WorkerEvent(kind=WorkerEventKind.ITEM, source=CARBINE, info=running, item=done))
+        # Newest first: the list draws them bottom to top.
+        wait_until(lambda: chat.property("rows").rows[0].is_done)
+        assert [row.index for row in chat.property("rows").rows] == [1, 0]
+
+        # Another source's worker does not touch this chat.
+        other = WorkerInfo(source=POSTER, status=WorkerStatus.RUNNING)
+        backend.on_event(WorkerEvent(kind=WorkerEventKind.ITEM, source=POSTER, info=other, item=tool))
+        studio.chat.send("SAY hello")
+        wait_until(lambda: backend.prompts == [(CARBINE, "SAY hello", None)])
+        assert len(chat.property("rows").rows) == 2
+
+    def test_pinning_a_reference_marks_it_in_the_rail(
+        self,
+        studio: Studio,
+        backend: FakeBackend,
+        wait_until: WaitUntil,
+    ) -> None:
+        studio.selectSource(CARBINE)
+        wait_until(lambda: studio.chat.property("source") == CARBINE)
+        studio.togglePinnedReference("SourceArt/References/mood.png")
+        wait_until(lambda: backend.pinned.get(CARBINE) == ["SourceArt/References/mood.png"])
+
+        assert backend.on_event is not None
+        info = WorkerInfo(source=CARBINE, pinned_references=("SourceArt/References/mood.png",))
+        backend.on_event(WorkerEvent(kind=WorkerEventKind.STATE, source=CARBINE, info=info))
+        wait_until(lambda: studio.property("referenceRows").rows[0].is_pinned)
+
+
+class TestApprovals:
+    def _approval(self) -> Approval:
+        return Approval(
+            id="a1",
+            project="Fake",
+            source=CARBINE,
+            tool_name="Write",
+            tool_summary="SourceArt/_lib/run_asset.py",
+            reason="Writes a shared path other sources build from: SourceArt/_lib/run_asset.py",
+            created_at="2026-10-26T12:00:00+00:00",
+        )
+
+    def test_a_raised_approval_lights_the_badge_until_it_is_answered(
+        self,
+        studio: Studio,
+        backend: FakeBackend,
+        wait_until: WaitUntil,
+    ) -> None:
+        approval = self._approval()
+        backend.approvals.append(approval)
+        assert backend.on_event is not None
+        backend.on_event(ApprovalEvent(approval=approval))
+        wait_until(lambda: studio.property("approvalCount") == 1)
+        row = studio.property("approvalRows").rows[0]
+        assert (row.source_name, row.is_in_open_project) == ("Carbine", True)
+
+        studio.answerApproval("a1", True, " fine ")
+        wait_until(lambda: studio.property("approvalCount") == 0)
+        assert backend.answers == [("a1", True, "fine")]
+
+
+class TestMarkup:
+    def _render(self, tmp_path: Path) -> Path:
+        image = QImage(1000, 500, QImage.Format.Format_RGB32)
+        image.fill(QColor("#808080"))
+        path = tmp_path / "render.png"
+        assert image.save(str(path))
+        return path
+
+    def test_markup_on_a_render_is_sent_as_feedback_with_its_pins(
+        self,
+        studio: Studio,
+        backend: FakeBackend,
+        tmp_path: Path,
+        wait_until: WaitUntil,
+    ) -> None:
+        studio.selectSource(CARBINE)
+        markup = studio.markup
+        markup.openImage(QUrl.fromLocalFile(str(self._render(tmp_path))).toString(), "Carbine_Side.png")
+        assert markup.is_open
+        assert studio.property("isStageReady")
+
+        markup.setTool("arrow")
+        markup.addStroke("arrow", [[0.1, 0.1], [0.5, 0.5]])
+        markup.addPin(0.75, 0.5)
+        markup.setPinNote(1, "Magazine 2 cm longer")
+        markup.addPin(0.2, 0.8)
+        markup.undo()
+        markup.send("Fix the marked spots")
+
+        wait_until(lambda: backend.prompts == [(CARBINE, "Fix the marked spots", 1)])
+        [request] = backend.feedback_requests
+        assert [stroke.tool for stroke in request.markup.strokes] == [StrokeTool.ARROW]
+        assert [(pin.number, pin.note) for pin in request.markup.pins] == [(1, "Magazine 2 cm longer")]
+        assert request.export == CARBINE_EXPORT
+        wait_until(lambda: not markup.is_open)
+
+    def test_flattening_draws_the_marks_at_full_resolution(self, qt_application: object, tmp_path: Path) -> None:
+        capture = QImage(str(self._render(tmp_path)))
+        drawn = Markup(
+            strokes=(Stroke(tool=StrokeTool.BOX, color="#ff4d4d", points=((0.1, 0.1), (0.4, 0.9))),),
+            pins=(Pin(number=1, x=0.8, y=0.5, note="here"),),
+        )
+        flattened = flatten_markup(capture, drawn)
+
+        assert (flattened.width(), flattened.height()) == (1000, 500)
+        # The box's left edge at x = 0.1, the untouched middle, and the pin's red disc at (0.8, 0.5), off its number.
+        box_edge = flattened.pixelColor(100, 250)
+        assert box_edge.red() > 230 and box_edge.green() < 110
+        assert flattened.pixelColor(600, 250).name() == "#808080"
+        pin_disc = flattened.pixelColor(800, 250 - 10)
+        assert pin_disc.red() > 200 and pin_disc.green() < 150

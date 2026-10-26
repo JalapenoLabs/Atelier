@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from atelierd.blender import BlenderError, _blender_environment, find_blender
+from atelierd.blender import BlenderError, blender_environment, find_blender
 
 
 def _make_python_folder(folder: Path) -> Path:
@@ -30,7 +30,7 @@ class TestBlenderEnvironment:
         path = os.pathsep.join(str(folder) for folder in (mise_python, venv_python, system_folder, tools_folder))
         monkeypatch.setenv("PATH", path)
 
-        environment = _blender_environment(system_folder)
+        environment = blender_environment(system_folder)
 
         assert environment["PATH"].split(os.pathsep) == [str(system_folder), str(tools_folder)]
 
@@ -43,7 +43,7 @@ class TestBlenderEnvironment:
         monkeypatch.setenv("PYTHONPATH", str(tmp_path))
         monkeypatch.setenv("ATELIER_TEST_KEEP", "kept")
 
-        environment = _blender_environment(tmp_path)
+        environment = blender_environment(tmp_path)
 
         assert "VIRTUAL_ENV" not in environment
         assert "PYTHONPATH" not in environment

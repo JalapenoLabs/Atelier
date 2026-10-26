@@ -1,4 +1,4 @@
-// A render shown full size on the stage, fitted to it, with a way back to the 3D viewport.
+// A render shown full size on the stage, fitted to it, with a way back to the 3D viewport and into markup.
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
@@ -33,6 +33,14 @@ Rectangle {
             text: "3D view"
             visible: studio.selectedExport !== ""
             onClicked: studio.showModel()
+        }
+
+        Button {
+            text: "Mark up"
+            enabled: image.status === Image.Ready
+            onClicked: studio.markupEditor.openImage(studio.stageImage, studio.stageImageName)
+            ToolTip.visible: hovered
+            ToolTip.text: "Draw on this render and send it to the source's worker"
         }
 
         Label {

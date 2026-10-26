@@ -36,8 +36,10 @@ baseline, and one whose files differ from its newest revision gets a `change`.
 The calls that record are `Revisions.record(source, trigger)` and, for the daemon, `RevisionTracker.record`, which
 also queues the standard renders the new revision needs. Both return the new revision, or None when nothing changed.
 
-The window records through the catalog watcher it runs, and so does `atelier scan <project> --watch`, which prints
-each revision as it is recorded.
+The daemon records through the catalog watcher it runs for each open project, and so does
+`atelier scan <project> --watch`, which prints each revision as it is recorded. A worker turn ends with a
+`worker-turn` revision (see `workers.md`); changes that settle while the turn runs are left to it, so one turn is
+one revision.
 
 ## Standard renders
 
@@ -109,8 +111,9 @@ revision's.
   `atelier.toml`, and a builder outside the source's own folder (a README's rebuild command running a project-wide
   script, like AnchorFall's `SourceArt/_lib/run_asset.py`). They are still snapshotted, so a compare shows them, and
   the restore reports them as skipped.
-- It is allowed only while no worker is running on the source: `Revisions` takes an `is_source_busy` check and
-  refuses a busy source. Until workers exist nothing is ever busy.
+- It is allowed only while no worker turn is running on the source: `Revisions` takes an `is_source_busy` check (in
+  the daemon, whether the source's worker has a turn starting or running) and refuses a busy source with
+  `SourceBusyError`.
 - It first records the current state as a `pre-restore` revision (or reuses the newest when nothing changed since),
   so a restore can itself be undone by restoring that revision. It then records the restored state as a `restore`
   revision naming the revision it came from.

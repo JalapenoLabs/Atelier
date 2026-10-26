@@ -1,7 +1,8 @@
 """The `atelier` command line.
 
-`atelier` on its own opens the desktop app (`--project` opens a project at start, `--state-root` keeps every
-project's state outside the projects).
+`atelier` on its own opens the desktop app, a client of the daemon (`atelierd`) on `--socket` (default
+`$XDG_RUNTIME_DIR/atelier.sock`). `--project` opens a project at start; `--state-root` is the state root a daemon the
+window starts keeps every project's state in, outside the projects.
 
 `atelier scan <project>` scans a project into its catalog and lists every source with its exports and renders.
 `<project>` is a path to the project's folder or the name of a project scanned before. With `--watch` it then keeps
@@ -64,10 +65,15 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--project", help="Open this project at start: its folder, or the name of a known project.")
     parser.add_argument(
+        "--socket",
+        type=Path,
+        help="The daemon's socket (default $XDG_RUNTIME_DIR/atelier.sock, or ATELIER_SOCKET).",
+    )
+    parser.add_argument(
         "--state-root",
         type=Path,
-        help="Keep each project's state in <state-root>/<project name>/ instead of <project>/.atelier/, so nothing "
-        "is written into the projects.",
+        help="When the window starts a daemon, have it keep each project's state in <state-root>/<project name>/ "
+        "instead of <project>/.atelier/, so nothing is written into the projects.",
     )
     parser.add_argument("-v", "--verbose", action="count", default=0, help="Log more (-v info, -vv debug).")
     _add_screenshot_arguments(parser)
@@ -119,6 +125,8 @@ def _add_screenshot_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--compare", choices=("renders", "models"), help=argparse.SUPPRESS)
     parser.add_argument("--compare-base", type=int, help=argparse.SUPPRESS)
     parser.add_argument("--compare-view", help=argparse.SUPPRESS)
+    parser.add_argument("--markup", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--markup-file", type=Path, help=argparse.SUPPRESS)
 
 
 def _run_gui(arguments: argparse.Namespace) -> int:
@@ -142,7 +150,8 @@ def _run_gui(arguments: argparse.Namespace) -> int:
     width, _, height = arguments.window_size.partition("x")
     options = GuiOptions(
         project=arguments.project,
-        state_root=arguments.state_root,
+        socket_path=arguments.socket,
+        state_root=arguments.state_root.resolve() if arguments.state_root else None,
         screenshot=arguments.screenshot,
         is_screenshot_shown=arguments.screenshot_shown,
         source=arguments.source,
@@ -152,6 +161,8 @@ def _run_gui(arguments: argparse.Namespace) -> int:
         compare=arguments.compare,
         compare_base=arguments.compare_base,
         compare_view=arguments.compare_view,
+        is_markup=arguments.markup,
+        markup_file=arguments.markup_file,
         view_options=view_options,
         window_size=(int(width), int(height)),
     )

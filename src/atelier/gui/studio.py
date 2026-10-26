@@ -12,11 +12,17 @@ Revisions follow `docs/revisions.md`. The stage follows the selected source's ne
 files as they are, until an older one is picked in the filmstrip; then the stage shows that revision as snapshotted:
 its exports converted from the object store, its renders read from it, and its standard renders first in the gallery.
 Compare puts two revisions side by side, as standard renders or as two models.
+
+Workers follow `docs/workers.md`: `chat` is the selected source's worker and chat, `markup` the drawing layer that
+sends feedback, and the approvals list holds every project's escalated tool calls for the header's badge. The window
+reaches the core only through the daemon; until it is connected (or when it goes away) `daemonState` says so and the
+window offers to start one.
 """
 
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Callable
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -24,9 +30,11 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict
 from PySide6.QtCore import Property, QObject, QUrl, Signal, Slot
 
-from atelier.gui.backend import StudioBackend, StudioEvent
+from atelier.gui.backend import DaemonDisconnected, StudioBackend, StudioEvent
+from atelier.gui.chat import Chat
 from atelier.gui.gallery import group_renders_by_stem
 from atelier.gui.list_model import RowListModel
+from atelier.gui.markup import MarkupEditor, MarkupTarget
 from atelier.gui.revisions import (
     RENDER_STATE_LABELS,
     TRIGGER_LABELS,
@@ -49,6 +57,8 @@ from atelierd.revisions import (
     RevisionEvent,
     SourceHistory,
 )
+from atelierd.rpc.protocol import DaemonInfo
+from atelierd.workers import Approval, ApprovalEvent, ApprovalStatus, WorkerEvent
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +84,21 @@ class CompareMode:
 
     RENDERS = "renders"
     MODELS = "models"
+
+
+class DaemonState:
+    """Where the window's connection to `atelierd` stands."""
+
+    CONNECTING = "connecting"
+    CONNECTED = "connected"
+    # No daemon answers; the window offers to start one.
+    MISSING = "missing"
+    STARTING = "starting"
+
+
+# How long the window waits for a daemon it started to answer.
+_DAEMON_START_ATTEMPTS = 50
+_DAEMON_START_INTERVAL_S = 0.2
 
 
 # The gallery's first group: the stage revision's standard renders of the selected export.
@@ -134,6 +159,22 @@ class ReferenceRow(BaseModel):
     name: str
     tag: str
     url: str
+    is_pinned: bool = False
+
+
+class ApprovalRow(BaseModel):
+    """One escalated tool call waiting in the header's approvals list."""
+
+    model_config = ConfigDict(frozen=True)
+
+    approval_id: str
+    project: str
+    source: str
+    source_name: str
+    tool_name: str
+    tool_summary: str
+    reason: str
+    is_in_open_project: bool
 
 
 class BookmarkRow(BaseModel):
@@ -225,6 +266,8 @@ class Studio(QObject):
     stageReadyChanged = Signal()
     historyChanged = Signal()
     compareChanged = Signal()
+    daemonChanged = Signal()
+    approvalsChanged = Signal()
 
     # Emitted by the core's threads (the watcher, revisions); connected queued, so the handler runs on the UI thread.
     _coreEventArrived = Signal(object)
@@ -281,6 +324,19 @@ class Studio(QObject):
         self._reference_rows = RowListModel(ReferenceRow)
         self._bookmark_rows = RowListModel(BookmarkRow)
         self._revision_rows = RowListModel(RevisionRow)
+
+        self._daemon_state = DaemonState.CONNECTING
+        self._daemon_note = ""
+        # A project asked for before the daemon answered, opened once it does.
+        self._pending_project = ""
+        self._references: list[Reference] = []
+        self._approvals: list[Approval] = []
+        self._approval_rows = RowListModel(ApprovalRow)
+        self.chat = Chat(backend, self._run_catalog, self._show_message)
+        self.chat.changed.connect(self._on_chat_changed)
+        self.markup = MarkupEditor(backend, self._run_catalog, self._show_message, self._markup_target)
+        # The markup editor takes the stage while it is open.
+        self.markup.changed.connect(self.stageReadyChanged)
 
         self._coreEventArrived.connect(self._on_core_event)
 
@@ -411,11 +467,31 @@ class Studio(QObject):
     def _get_message(self) -> str:
         return self._message
 
+    def _get_chat(self) -> QObject:
+        return self.chat
+
+    def _get_markup(self) -> QObject:
+        return self.markup
+
+    def _get_approval_rows(self) -> QObject:
+        return self._approval_rows
+
+    def _get_approval_count(self) -> int:
+        return len(self._approvals)
+
+    def _get_daemon_state(self) -> str:
+        return self._daemon_state
+
+    def _get_daemon_note(self) -> str:
+        return self._daemon_note
+
     def _get_is_busy(self) -> bool:
         return self._busy_count > 0
 
     def _get_is_stage_ready(self) -> bool:
         """Whether the stage shows what it will settle on: a reported model with its stats, an image, or compare."""
+        if self.markup.is_open:
+            return True
         if self._is_comparing:
             return self._compare_left.is_settled(self._compare_mode) and self._compare_right.is_settled(
                 self._compare_mode
@@ -462,6 +538,12 @@ class Studio(QObject):
     compareRight = Property(QObject, _get_compare_right, constant=True)
     standardViews = Property(list, _get_standard_views, constant=True)
     message = Property(str, _get_message, notify=messageChanged)
+    chatModel = Property(QObject, _get_chat, constant=True)
+    markupEditor = Property(QObject, _get_markup, constant=True)
+    approvalRows = Property(QObject, _get_approval_rows, constant=True)
+    approvalCount = Property(int, _get_approval_count, notify=approvalsChanged)
+    daemonState = Property(str, _get_daemon_state, notify=daemonChanged)
+    daemonNote = Property(str, _get_daemon_note, notify=daemonChanged)
     isBusy = Property(bool, _get_is_busy, notify=busyChanged)
     isStageReady = Property(bool, _get_is_stage_ready, notify=stageReadyChanged)
 
@@ -492,6 +574,37 @@ class Studio(QObject):
     # ####################### #
 
     @Slot()
+    def connectDaemon(self) -> None:
+        """Reach the daemon; until it answers the window shows how to start one."""
+        self._set_daemon_state(DaemonState.CONNECTING, "")
+        self._tasks.run_catalog(
+            lambda: self._backend.connect(self._coreEventArrived.emit),
+            self._on_daemon_connected,
+            lambda error: self._set_daemon_state(DaemonState.MISSING, str(error)),
+        )
+
+    @Slot()
+    def startDaemon(self) -> None:
+        """Start a daemon in the background, which outlives the window, and connect to it."""
+        self._set_daemon_state(DaemonState.STARTING, "Starting atelierd…")
+
+        def start_and_connect() -> DaemonInfo:
+            how = self._backend.start_daemon()
+            logger.info(f"[Studio] {how}")
+            for _ in range(_DAEMON_START_ATTEMPTS):
+                try:
+                    return self._backend.connect(self._coreEventArrived.emit)
+                except ConnectionError:
+                    time.sleep(_DAEMON_START_INTERVAL_S)
+            return self._backend.connect(self._coreEventArrived.emit)
+
+        self._tasks.run_catalog(
+            start_and_connect,
+            self._on_daemon_connected,
+            lambda error: self._set_daemon_state(DaemonState.MISSING, f"atelierd did not start: {error}"),
+        )
+
+    @Slot()
     def refreshProjects(self) -> None:
         """Reload the machine's list of known projects."""
         self._run_catalog(self._backend.list_projects, self._on_projects)
@@ -502,16 +615,31 @@ class Studio(QObject):
         if not reference:
             logger.debug("[Studio] openProject called without a project")
             return
+        if self._daemon_state != DaemonState.CONNECTED:
+            logger.debug(f"[Studio] Opening {reference} once the daemon answers")
+            self._pending_project = reference
+            return
         self._show_message(f"Opening {reference}...")
-        self._run_catalog(
-            lambda: self._backend.open_project(reference, on_event=self._coreEventArrived.emit),
-            self._on_project_opened,
-        )
+        self._run_catalog(lambda: self._backend.open_project(reference), self._on_project_opened)
 
     def close(self) -> None:
-        """Stop background work; called once as the window closes."""
-        self._backend.close_project()
+        """Stop background work and let go of the daemon; called once as the window closes."""
+        self._backend.close()
         self._tasks.shutdown()
+
+    def _on_daemon_connected(self, info: DaemonInfo) -> None:
+        self._set_daemon_state(DaemonState.CONNECTED, f"atelierd (pid {info.pid})")
+        self.refreshProjects()
+        self._run_catalog(self._backend.list_approvals, self._set_approvals)
+        reference = self._pending_project or self._project_name
+        self._pending_project = ""
+        if reference:
+            self.openProject(reference)
+
+    def _set_daemon_state(self, state: str, note: str) -> None:
+        self._daemon_state = state
+        self._daemon_note = note
+        self.daemonChanged.emit()
 
     def _on_projects(self, projects: list[str]) -> None:
         self._projects = projects
@@ -525,6 +653,7 @@ class Studio(QObject):
         self._clear_selection()
         self._rebuild_tree()
         self._set_references(list(result.references))
+        self._refresh_approval_rows()
         self.projectChanged.emit()
         self._show_message(f"{self._project_name}: {len(result.sources)} sources")
         # Opening by path registers a project the picker may not list yet.
@@ -534,8 +663,17 @@ class Studio(QObject):
     def _on_core_event(self, event: StudioEvent) -> None:
         """Follow the core: a revision or its renders refresh the history, and a settled change refreshes the lists.
 
-        A change to the selected source's files reloads it.
+        A change to the selected source's files reloads it. Worker events go to the chat, approvals to the badge.
         """
+        if isinstance(event, DaemonDisconnected):
+            self._set_daemon_state(DaemonState.MISSING, "Lost the connection to atelierd")
+            return
+        if isinstance(event, WorkerEvent):
+            self.chat.apply_event(event)
+            return
+        if isinstance(event, ApprovalEvent):
+            self._apply_approval(event.approval)
+            return
         if isinstance(event, RevisionEvent):
             if event.source == self._selected_source:
                 self._refresh_history()
@@ -603,6 +741,8 @@ class Studio(QObject):
 
     def _clear_selection(self) -> None:
         self._selected_source = ""
+        self.chat.load("")
+        self.markup.close()
         self._reset_revisions()
         self._export_rows.set_rows([])
         self._render_rows.set_rows([])
@@ -623,6 +763,8 @@ class Studio(QObject):
 
         if not keep_export:
             self._reset_revisions()
+            self.markup.close()
+            self.chat.load(source.path)
         self._readme_text = self._read_readme(source)
         self.readmeChanged.emit()
         self._refresh_bookmarks()
@@ -1144,16 +1286,91 @@ class Studio(QObject):
         self._bookmark_rows.set_rows(rows)
 
     def _set_references(self, references: list[Reference]) -> None:
+        self._references = references
+        pinned = set(self.chat.pinned_references)
         rows = [
             ReferenceRow(
                 path=reference.path,
                 name=PurePosixPath(reference.path).name,
                 tag=reference.tag,
                 url=self._file_url(reference.path),
+                is_pinned=reference.path in pinned,
             )
             for reference in references
         ]
         self._reference_rows.set_rows(rows)
+
+    @Slot(str)
+    def togglePinnedReference(self, reference_path: str) -> None:
+        """Pin a reference to the selected source's next prompt, or unpin it."""
+        source_path = self._selected_source
+        if not source_path:
+            self._show_message("Select a source to pin references to its next prompt")
+            return
+        pinned = set(self.chat.pinned_references)
+        pinned ^= {reference_path}
+        self._run_catalog(lambda: self._backend.pin_references(source_path, sorted(pinned)), lambda _: None)
+
+    def _on_chat_changed(self) -> None:
+        """Keep the rail's pins in step with the chat's, which follow the worker's state."""
+        pinned = set(self.chat.pinned_references)
+        rows = [row for row in self._reference_rows.rows if isinstance(row, ReferenceRow)]
+        if any(row.is_pinned != (row.path in pinned) for row in rows):
+            self._set_references(self._references)
+
+    # ####################### #
+    #        APPROVALS        #
+    # ####################### #
+
+    @Slot(str, bool, str)
+    def answerApproval(self, approval_id: str, is_allowed: bool, message: str) -> None:
+        """Allow or deny an escalated tool call."""
+        self._run_catalog(
+            lambda: self._backend.answer_approval(approval_id, is_allowed, message.strip()),
+            self._apply_approval,
+        )
+
+    def _set_approvals(self, approvals: list[Approval]) -> None:
+        self._approvals = approvals
+        self._refresh_approval_rows()
+
+    def _apply_approval(self, approval: Approval) -> None:
+        others = [pending for pending in self._approvals if pending.id != approval.id]
+        if approval.status is ApprovalStatus.PENDING:
+            others.append(approval)
+        self._set_approvals(others)
+
+    def _refresh_approval_rows(self) -> None:
+        rows = [
+            ApprovalRow(
+                approval_id=approval.id,
+                project=approval.project,
+                source=approval.source,
+                source_name=PurePosixPath(approval.source).stem,
+                tool_name=approval.tool_name,
+                tool_summary=approval.tool_summary,
+                reason=approval.reason,
+                is_in_open_project=approval.project == self._project_name,
+            )
+            for approval in self._approvals
+        ]
+        self._approval_rows.set_rows(rows)
+        self.approvalsChanged.emit()
+
+    # ####################### #
+    #         MARKUP          #
+    # ####################### #
+
+    def _markup_target(self) -> MarkupTarget | None:
+        """What the stage shows, for a capture about to be marked up."""
+        if not self._selected_source:
+            return None
+        staged = self._staged_revision()
+        return MarkupTarget(
+            source=self._selected_source,
+            revision_id=staged.id if staged else None,
+            export=self._selected_export or None,
+        )
 
     # -----------------------------------------------------------------------------
     # Internals
@@ -1169,8 +1386,13 @@ class Studio(QObject):
         self._message = text
         self.messageChanged.emit()
 
-    def _run_catalog(self, work: Callable[[], Any], on_done: Callable[[Any], None]) -> None:
-        """Run backend work off the UI thread, showing the window as busy until it is done."""
+    def _run_catalog(
+        self,
+        work: Callable[[], Any],
+        on_done: Callable[[Any], None],
+        on_error: Callable[[Exception], None] | None = None,
+    ) -> None:
+        """Run backend work off the UI thread, showing the window as busy until it is done, and any failure."""
         self._busy_count += 1
         self.busyChanged.emit()
 
@@ -1184,5 +1406,7 @@ class Studio(QObject):
             self.busyChanged.emit()
             logger.error(f"[Studio] {error}")
             self._show_message(str(error))
+            if on_error:
+                on_error(error)
 
         self._tasks.run_catalog(work, finish, fail)

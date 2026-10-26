@@ -5,11 +5,13 @@ terminal or anywhere else on the machine, that oversees a project's art. It call
 exactly what you see.
 
 ```
-claude mcp add --transport http atelier http://127.0.0.1:<port>/mcp
+claude mcp add --transport http atelier http://127.0.0.1:47817/mcp
 ```
 
-This is separate from the worker-side `atelier` server each worker gets (see `workers.md`), which only carries the
-approval tool.
+It mounts at `/mcp` on the daemon's HTTP front door (`atelierd.mcp.app`, default port 47817, `--http-port`), beside
+the worker-side `atelier` server each worker gets at `/worker/mcp` (see `workers.md`), which only carries the
+approval tool. Its tools call the core the GUI's RPC calls (see "The core every front door calls" in
+`architecture.md`).
 
 ## Tools
 
