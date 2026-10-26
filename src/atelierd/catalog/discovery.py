@@ -56,6 +56,8 @@ def discover_sources(project_root: Path, config: AtelierConfig) -> tuple[list[Di
         The sources sorted by path, and the `[sources."…"]` override keys that matched no source.
     """
     sources: list[DiscoveredSource] = []
+    # Roots may overlap (`SourceArt` and `SourceArt/Weapons`); each folder is still read once.
+    seen_folders: set[Path] = set()
 
     for root in config.roots:
         root_folder = project_root / root
@@ -64,6 +66,11 @@ def discover_sources(project_root: Path, config: AtelierConfig) -> tuple[list[Di
             continue
 
         for folder, file_names in _walk_files(root_folder):
+            resolved_folder = folder.resolve()
+            if resolved_folder in seen_folders:
+                continue
+            seen_folders.add(resolved_folder)
+
             blend_names = sorted(name for name in file_names if name.endswith(SOURCE_SUFFIX))
             if not blend_names:
                 continue
@@ -77,9 +84,12 @@ def discover_sources(project_root: Path, config: AtelierConfig) -> tuple[list[Di
                 owner = max(owners, key=len, default=None)
                 files_by_owner.setdefault(owner, []).append(file)
 
+            builder_by_stem = _pair_builders(stems, file_names)
             for stem, blend_name in zip(stems, blend_names, strict=True):
                 own_files = [*files_by_owner.get(stem, []), *files_by_owner.get(None, [])]
-                sources.append(_build_source(project_root, config, folder, blend_name, own_files))
+                builder_name = builder_by_stem.get(stem)
+                source = _build_source(project_root, config, folder, blend_name, own_files, builder_name)
+                sources.append(source)
 
     sources.sort(key=lambda source: source.path)
     discovered_paths = {source.path for source in sources}
@@ -137,6 +147,7 @@ def _build_source(
     folder: Path,
     blend_name: str,
     folder_files: list[Path],
+    builder_name: str | None,
 ) -> DiscoveredSource:
     """Assemble one source from its folder's files, honouring any `atelier.toml` override."""
     blend_path = (folder / blend_name).relative_to(project_root).as_posix()
@@ -165,7 +176,7 @@ def _build_source(
 
     return DiscoveredSource(
         path=blend_path,
-        builder=_find_builder(project_root, folder, blend_name, readme),
+        builder=_find_builder(project_root, folder, blend_name, builder_name, readme),
         readme=readme_path,
         exports=tuple(sorted(set(exports))),
         renders=tuple(sorted(set(renders))),
@@ -180,32 +191,55 @@ def _is_render(image_path: PurePosixPath) -> bool:
     return any(fnmatch.fnmatchcase(image_path.stem, pattern) for pattern in RENDER_NAME_GLOBS)
 
 
-def _find_builder(project_root: Path, folder: Path, blend_name: str, readme: Path) -> str | None:
-    """Find the script that generates a .blend.
+def _pair_builders(stems: list[str], file_names: list[str]) -> dict[str, str]:
+    """Pair the `.blend` stems of one folder with the `build_*.py` scripts beside them.
 
-    A folder with one `build_*.py` has one builder. A folder holding several kits pairs each `.blend` with the
-    builder named after it: `DeckKit.blend` with `build_deck_kit.py`, or, when no exact name exists, the one
-    `build_deck_kit_*.py`. Failing both, the README's rebuild command names the script.
+    One kit alone with one script pairs with it whatever its name. Otherwise each script goes to the kit it is named
+    after, `build_deck_kit.py` or `build_deck_kit_*.py` to `DeckKit.blend`, and the longest kit name wins, so
+    `build_dining_spa_rooms.py` goes to `DiningSpa.blend` rather than `Dining.blend`. A kit then takes its exactly
+    named script, or its only script. A kit no script is named after gets none here.
     """
-    builder_names = sorted(
-        name
-        for name in os.listdir(folder)
-        if name.startswith(BUILDER_PREFIX) and name.endswith(".py") and (folder / name).is_file()
-    )
+    builder_names = sorted(name for name in file_names if name.startswith(BUILDER_PREFIX) and name.endswith(".py"))
+    if len(stems) == 1 and len(builder_names) == 1:
+        return {stems[0]: builder_names[0]}
 
-    if len(builder_names) == 1:
-        return (folder / builder_names[0]).relative_to(project_root).as_posix()
+    snake_by_stem = {stem: _CAMEL_BOUNDARY_PATTERN.sub("_", stem).lower() for stem in stems}
+    candidates_by_stem: dict[str, list[str]] = {}
+    for builder_name in builder_names:
+        script_name = builder_name.removeprefix(BUILDER_PREFIX).removesuffix(".py")
+        owners = [
+            stem
+            for stem, snake_stem in snake_by_stem.items()
+            if script_name == snake_stem or script_name.startswith(f"{snake_stem}_")
+        ]
+        owner = max(owners, key=lambda stem: len(snake_by_stem[stem]), default=None)
+        if owner is None:
+            logger.debug(f"[Discovery] Builder {builder_name} is named after none of {stems}")
+            continue
+        candidates_by_stem.setdefault(owner, []).append(builder_name)
 
-    if builder_names:
-        stem = blend_name.removesuffix(SOURCE_SUFFIX)
-        snake_stem = _CAMEL_BOUNDARY_PATTERN.sub("_", stem).lower()
-        exact_name = f"{BUILDER_PREFIX}{snake_stem}.py"
-        prefixed_names = [name for name in builder_names if name.startswith(f"{BUILDER_PREFIX}{snake_stem}_")]
-        if exact_name in builder_names:
-            return (folder / exact_name).relative_to(project_root).as_posix()
-        if len(prefixed_names) == 1:
-            return (folder / prefixed_names[0]).relative_to(project_root).as_posix()
-        logger.debug(f"[Discovery] No builder in {folder} is named after {blend_name}: {builder_names}")
+    builder_by_stem: dict[str, str] = {}
+    for stem, candidates in candidates_by_stem.items():
+        exact_name = f"{BUILDER_PREFIX}{snake_by_stem[stem]}.py"
+        if exact_name in candidates:
+            builder_by_stem[stem] = exact_name
+        elif len(candidates) == 1:
+            builder_by_stem[stem] = candidates[0]
+        else:
+            logger.debug(f"[Discovery] Several builders could build {stem}.blend: {candidates}")
+    return builder_by_stem
+
+
+def _find_builder(
+    project_root: Path,
+    folder: Path,
+    blend_name: str,
+    builder_name: str | None,
+    readme: Path,
+) -> str | None:
+    """Return a source's builder: the script paired with it in its folder, else its README's rebuild command."""
+    if builder_name:
+        return (folder / builder_name).relative_to(project_root).as_posix()
 
     if readme.is_file():
         return _builder_from_readme(project_root, readme)

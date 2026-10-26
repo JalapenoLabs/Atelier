@@ -18,15 +18,9 @@ from atelierd.constants import (
     GIT_IGNORE_FILE,
     STATE_DB_NAME,
     STATE_DIR_NAME,
-    STATE_IGNORE_ENTRY,
 )
 
 logger = logging.getLogger(__name__)
-
-# Ignore-file lines that already cover the state folder.
-_EQUIVALENT_IGNORE_ENTRIES = frozenset(
-    {STATE_DIR_NAME, STATE_IGNORE_ENTRY, f"/{STATE_DIR_NAME}", f"/{STATE_IGNORE_ENTRY}"}
-)
 
 # The ignore file to create for a project that has none yet, keyed by the folder that marks its version control.
 _IGNORE_FILE_BY_VCS_FOLDER = {
@@ -87,6 +81,15 @@ def ensure_state_ignored(project: Project) -> list[Path]:
         logger.info(f"[Project] State lives outside {project.root}, leaving its ignore files alone")
         return []
 
+    # The entry names the state folder actually in use, `.atelier/` by default or a `--state-dir` inside the project.
+    state_folder = project.state_dir.relative_to(project.root).as_posix()
+    if state_folder == ".":
+        logger.warning(f"[Project] State lives in the root of {project.root} itself; it cannot be ignored as a folder")
+        return []
+    ignore_entry = f"{state_folder}/"
+    # Lines that already cover the state folder, with or without the leading and trailing slashes.
+    equivalent_entries = {state_folder, ignore_entry, f"/{state_folder}", f"/{ignore_entry}"}
+
     ignore_files = [project.root / name for name in (DIVERSION_IGNORE_FILE, GIT_IGNORE_FILE)]
     existing_ignore_files = [ignore_file for ignore_file in ignore_files if ignore_file.is_file()]
     if not existing_ignore_files:
@@ -96,13 +99,13 @@ def ensure_state_ignored(project: Project) -> list[Path]:
             if (project.root / vcs_folder).is_dir()
         ]
     if not existing_ignore_files:
-        logger.warning(f"[Project] {project.root} has no version control; nothing to add '{STATE_IGNORE_ENTRY}' to")
+        logger.warning(f"[Project] {project.root} has no version control; nothing to add '{ignore_entry}' to")
         return []
 
     changed_files: list[Path] = []
     for ignore_file in existing_ignore_files:
         content = ignore_file.read_text(encoding="utf-8") if ignore_file.is_file() else ""
-        if any(line.strip() in _EQUIVALENT_IGNORE_ENTRIES for line in content.splitlines()):
+        if any(line.strip() in equivalent_entries for line in content.splitlines()):
             continue
 
         # Appending, rather than rewriting the file, can never disturb the project's own entries.
@@ -110,8 +113,8 @@ def ensure_state_ignored(project: Project) -> list[Path]:
         if content:
             leading_break = "\n\n" if not content.endswith("\n") else "\n"
         with ignore_file.open("a", encoding="utf-8") as ignore_handle:
-            ignore_handle.write(f"{leading_break}# Atelier's review state\n{STATE_IGNORE_ENTRY}\n")
-        logger.info(f"[Project] Added '{STATE_IGNORE_ENTRY}' to {ignore_file}")
+            ignore_handle.write(f"{leading_break}# Atelier's review state\n{ignore_entry}\n")
+        logger.info(f"[Project] Added '{ignore_entry}' to {ignore_file}")
         changed_files.append(ignore_file)
 
     return changed_files

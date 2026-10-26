@@ -49,6 +49,12 @@ class TestScan:
         assert change.changed == (CARBINE,)
         assert change.added == change.removed == ()
 
+    def test_overlapping_roots_scan_without_a_duplicate_source(self, project_root: Path, tmp_path: Path) -> None:
+        config_path = tmp_path / "overlap.toml"
+        config_path.write_text('roots = ["SourceArt", "SourceArt/Weapons"]\n', encoding="utf-8")
+        catalog = Catalog(open_project(project_root, config_path=config_path))
+        assert len(catalog.scan().sources) == 7
+
 
 class TestStatuses:
     def test_status_survives_a_rescan(self, catalog: Catalog) -> None:
