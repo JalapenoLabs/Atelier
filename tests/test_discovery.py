@@ -81,6 +81,13 @@ class TestExportsAndRenders:
         assert sources[HULL].renders == ("SourceArt/Ship/Hull_preview_port.png",)
         assert sources[DINING_SPA].renders == ("SourceArt/Rooms/DiningSpa_contact_sheet.png",)
 
+    def test_the_longest_kit_name_owns_a_file(self, project_root: Path) -> None:
+        (project_root / "SourceArt/Ship/Hull_Deck.blend").touch()
+        (project_root / "SourceArt/Ship/Hull_Deck_preview.png").touch()
+        sources = _discover(project_root)
+        assert sources["SourceArt/Ship/Hull_Deck.blend"].renders == ("SourceArt/Ship/Hull_Deck_preview.png",)
+        assert sources[HULL].renders == ("SourceArt/Ship/Hull_preview_port.png",)
+
     def test_kits_sharing_a_folder_share_its_unnamed_files(self, project_root: Path) -> None:
         sources = _discover(project_root)
         assert sources[DECK_KIT].exports == ("SourceArt/Ship/Export/SM_Wall.fbx",)

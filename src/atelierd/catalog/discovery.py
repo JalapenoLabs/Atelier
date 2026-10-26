@@ -68,16 +68,17 @@ def discover_sources(project_root: Path, config: AtelierConfig) -> tuple[list[Di
             if not blend_names:
                 continue
 
-            folder_files = _collect_folder_files(folder, file_names)
-            for blend_name in blend_names:
-                # In a folder of several kits, a file named after one kit (`Hull_preview.png`) is that kit's alone.
-                sibling_prefixes = tuple(
-                    f"{sibling_name.removesuffix(SOURCE_SUFFIX)}{separator}"
-                    for sibling_name in blend_names
-                    if sibling_name != blend_name
-                    for separator in ("_", ".")
-                )
-                own_files = [file for file in folder_files if not file.name.startswith(sibling_prefixes)]
+            # In a folder of several kits, a file named after one kit (`Hull_preview.png`) is that kit's alone, and
+            # the longest name wins, so `Hull_Deck_preview.png` goes to `Hull_Deck.blend` rather than `Hull.blend`.
+            stems = [blend_name.removesuffix(SOURCE_SUFFIX) for blend_name in blend_names]
+            files_by_owner: dict[str | None, list[Path]] = {}
+            for file in _collect_folder_files(folder, file_names):
+                owners = [stem for stem in stems if file.name.startswith((f"{stem}_", f"{stem}."))]
+                owner = max(owners, key=len, default=None)
+                files_by_owner.setdefault(owner, []).append(file)
+
+            for stem, blend_name in zip(stems, blend_names, strict=True):
+                own_files = [*files_by_owner.get(stem, []), *files_by_owner.get(None, [])]
                 sources.append(_build_source(project_root, config, folder, blend_name, own_files))
 
     sources.sort(key=lambda source: source.path)
