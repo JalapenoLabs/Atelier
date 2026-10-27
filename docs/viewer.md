@@ -102,14 +102,46 @@ Blender's Y as -Y), so nothing is mirrored.
 
 ### Camera
 
-Orbit (drag), pan (Ctrl+drag) and zoom (wheel) around a target. **F** frames the model's bounds from a three-quarter
-view on its -X -Y side, slightly above; **Shift+F** frames the model and the figure together. The camera is framed
-when an export is first shown and kept when the same export reloads.
+The viewport navigates like Blender's default: a turntable orbit around an invisible pivot, with no roll. Yaw always
+turns about the vertical and pitch stops at straight down and straight up, so the view never passes over a pole and
+flips.
+
+| Input                                     | Does                                                                          |
+|-------------------------------------------|-------------------------------------------------------------------------------|
+| Middle drag, or left drag                 | Orbit the pivot; the model turns with the mouse (0.4 degrees a pixel)         |
+| Shift+middle drag, Shift+left, right drag | Pan: the pivot slides in the view plane, the model following the mouse        |
+| Ctrl+middle drag, Ctrl+left, wheel        | Zoom: drag down or wheel up to dolly toward the pivot, never nearer than 1 cm |
+| Numpad 1, 3, 7                            | Front, right and top; with Ctrl, back, left and bottom                        |
+| Numpad 5                                  | Perspective or orthographic                                                   |
+| Numpad 4 and 6, 8 and 2                   | Step the camera 15 degrees left and right, up and down                        |
+| Numpad 9                                  | The opposite side (180 degrees about the vertical)                            |
+| Numpad + and -                            | Zoom one wheel notch                                                          |
+| Numpad ., Home                            | Frame the model from the current direction                                    |
+| F, Shift+F                                | Frame the model (with the 180 cm figure) from the default three-quarter view  |
+
+The left and right buttons are conveniences for trackpads and mice without an easy middle button; the viewer has no
+selection for them to conflict with. A drag keeps the gesture it started with. Each numpad key also answers to the key
+it sends with Num Lock off (End for 1, and so on), and the top-row digits are not views.
+
+Front, right and top are exactly the `front`, `side` and `top` standard renders (see `revisions.md`): front from +Y,
+right from +X with +Y on the image's left, top from above with -X up the image. As with Blender's Auto Perspective, an
+axis view turns orthographic by itself and orbiting off the axis turns it back to perspective; orthographic chosen with
+numpad 5 stays. The orthographic camera shows the height the perspective one sees at the pivot, so switching keeps the
+model's size. The view's name ("Front orthographic", "User perspective") shows above the hint.
+
+The default three-quarter view looks from the model's -X -Y side, 22 degrees above. The camera is framed that way
+when an export is first shown and kept when the same export reloads. Compare's two 3D viewports look through one
+shared camera, so navigating either moves both.
+
+The camera is `atelier.gui.camera.ViewportCamera`, registered for QML as `import Atelier`: the pivot, yaw, pitch,
+distance and projection, and the slots that move them, as plain math that is unit-tested. `ViewportNavigation.qml`
+maps the mouse and keys onto it.
 
 **Camera bookmarks** (**Views**) are saved per source, by name, in `state.db` (`camera_bookmarks`), so a manager can
 use the same views later. Each holds the orbit target in Unreal centimetres, the yaw (about the vertical,
 counterclockwise seen from above: 0 on the target's +Y side, 90 on its +X side), the pitch (negative looks down) and
-the distance in cm.
+the distance in cm. A bookmark keeps no projection: applying one leaves an orthographic view chosen with numpad 5 as
+it is, and an automatic one turns perspective unless the bookmark looks along an axis.
 
 ### Display
 
@@ -174,7 +206,8 @@ thread, conversions on their own. Show in Blender is the window's own (`gui/desk
 ## Development
 
 `atelier --project <p> --source <path> --screenshot <out.png>` renders the window once and quits (also `--export`,
-`--render`, `--lighting clay`, `--wireframe`, `--collision`, `--direct`, `--frame figure`, `--tab`, `--window-size`,
+`--render`, `--lighting clay`, `--wireframe`, `--collision`, `--direct`, `--frame figure`,
+`--view front|back|right|left|top|bottom` (a numpad view after framing), `--tab`, `--window-size`,
 for revisions `--revision <n>`, `--compare renders|models`, `--compare-base <n>`, `--compare-view <view>`, and for
 markup `--markup` with `--render <name>` and `--markup-file <markup.json>`; none of these are in `--help`). It needs a
 running daemon; `--tab chat` waits for the source's chat. Qt's `offscreen` platform has no 3D graphics API, so Quick 3D draws nothing there; by
@@ -188,4 +221,5 @@ hyprctl eval "hl.exec_cmd('<command>', { workspace = 'special:atelier silent', f
 ```
 
 The tests run on `offscreen` without a display: the view-model against a fake backend, the tree and gallery
-functions, and a check that every QML file loads without a warning against a real daemon run in the test process.
+functions, the camera's math and the mouse and keys driving it (`tests/test_gui_camera.py`), and a check that every
+QML file loads without a warning against a real daemon run in the test process.

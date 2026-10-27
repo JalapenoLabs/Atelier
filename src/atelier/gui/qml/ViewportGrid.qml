@@ -1,24 +1,26 @@
 // The viewport's backdrop: the theme's background colour and the ground grid with its axes, in Unreal units.
 //
 // It is a View3D of its own, placed under the model's (as its child at z -1, so grabbing the model's view takes it
-// along), seen through a camera that follows the model view's camera. Two reasons: Qt's InfiniteGrid has fixed
-// colours, so the grid is a plane with a shader (shaders/grid.frag) that takes the theme's; and a plane in the
-// model's own scene would turn into its two triangles' edges under the wireframe debug mode. The model's view clears
-// to transparent, so the model is always drawn over the grid.
+// along), seen through cameras that follow the model view's perspective and orthographic ones. Two reasons: Qt's
+// InfiniteGrid has fixed colours, so the grid is a plane with a shader (shaders/grid.frag) that takes the theme's;
+// and a plane in the model's own scene would turn into its two triangles' edges under the wireframe debug mode. The
+// model's view clears to transparent, so the model is always drawn over the grid.
 import QtQuick
 import QtQuick3D
 
 View3D {
     id: backdrop
 
-    required property PerspectiveCamera sourceCamera
+    required property PerspectiveCamera perspectiveSource
+    required property OrthographicCamera orthographicSource
+    property bool isOrthographic: false
     property real gridIntervalCm: 10
     property bool showGrid: true
 
     // Far enough that the grid reaches the horizon from a model-sized orbit, scaled up as the camera climbs.
     readonly property real fadeDistance: Math.max(gridIntervalCm * 500, Math.abs(followCamera.y) * 25)
 
-    camera: followCamera
+    camera: isOrthographic ? followOrthographic : followCamera
     environment: SceneEnvironment {
         clearColor: Theme.viewportBackground
         backgroundMode: SceneEnvironment.Color
@@ -28,11 +30,21 @@ View3D {
 
     PerspectiveCamera {
         id: followCamera
-        position: backdrop.sourceCamera.scenePosition
-        rotation: backdrop.sourceCamera.sceneRotation
-        fieldOfView: backdrop.sourceCamera.fieldOfView
-        clipNear: backdrop.sourceCamera.clipNear
-        clipFar: backdrop.sourceCamera.clipFar
+        position: backdrop.perspectiveSource.scenePosition
+        rotation: backdrop.perspectiveSource.sceneRotation
+        fieldOfView: backdrop.perspectiveSource.fieldOfView
+        clipNear: backdrop.perspectiveSource.clipNear
+        clipFar: backdrop.perspectiveSource.clipFar
+    }
+
+    OrthographicCamera {
+        id: followOrthographic
+        position: backdrop.orthographicSource.scenePosition
+        rotation: backdrop.orthographicSource.sceneRotation
+        horizontalMagnification: backdrop.orthographicSource.horizontalMagnification
+        verticalMagnification: backdrop.orthographicSource.verticalMagnification
+        clipNear: backdrop.orthographicSource.clipNear
+        clipFar: backdrop.orthographicSource.clipFar
     }
 
     // Qt's #Rectangle is 100 units across in its XY plane; laid flat and kept under the camera, it covers the grid's

@@ -79,9 +79,9 @@ Rectangle {
 
         ToolButton {
             text: "Frame"
-            onClicked: toolbar.viewport.frame(false)
+            onClicked: toolbar.viewport.frameThreeQuarter(false)
             ToolTip.visible: hovered
-            ToolTip.text: "Frame the model (F); Shift+F frames it with the 180 cm figure"
+            ToolTip.text: "Frame the model from the three-quarter view (F); Shift+F frames it with the 180 cm figure"
         }
         ToolButton {
             text: "Direct FBX"

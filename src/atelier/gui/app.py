@@ -31,7 +31,9 @@ from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtQuick import QQuickWindow
 from PySide6.QtQuickControls2 import QQuickStyle
 
-# Importing the module registers the `Atelier.ThemeFile` QML singleton that Theme.qml reads.
+# Imported for their side effects, before any QML loads: registering the `ViewportCamera` QML type and the
+# `Atelier.ThemeFile` singleton that Theme.qml reads (both `import Atelier`).
+import atelier.gui.camera  # noqa: F401
 import atelier.gui.theme  # noqa: F401
 from atelier.gui.backend import RpcBackend
 from atelier.gui.studio import DaemonState, Studio
