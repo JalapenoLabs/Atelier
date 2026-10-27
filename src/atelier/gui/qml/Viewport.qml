@@ -1,8 +1,8 @@
-// The 3D viewport: the selected export on a grid in Unreal units, beside a 180 cm figure, with orbit, pan and
-// zoom (drag, Ctrl+drag, wheel), studio or clay lighting, wireframe, collision hulls and camera bookmarks.
+// The 3D viewport: the selected export on a grid in Unreal units, beside a 180 cm figure, navigated like Blender
+// (ViewportNavigation.qml), with studio or clay lighting, wireframe, collision hulls and camera bookmarks.
 //
 // The stage has one primary viewport, bound to the studio's model, with its controls and remembered settings. Compare
-// shows two more, each given its own model and stats, with the orbit shared between them (see ComparePage.qml).
+// shows two more, each given its own model and stats, sharing one camera (see ComparePage.qml).
 //
 // Frames. Qt Quick 3D's scene is Y up; Unreal is Z up. Both load paths (the FBX through assimp, the .glb from
 // Blender) arrive Y up in centimetres, so a Qt scene point (x, y, z) is the Unreal point (x, z, y). Bookmarks and
@@ -14,6 +14,7 @@ import QtQuick.Layouts
 import QtQuick3D
 import QtQuick3D.AssetUtils
 import QtQuick3D.Helpers
+import Atelier
 
 Item {
     id: viewport
@@ -25,10 +26,10 @@ Item {
     // Framing happens once per key: reloading the same export keeps the camera.
     property string frameKey: studio.selectedExport
     property bool framesOnLoad: true
-    // The orbit, so two viewports can share one camera.
-    property alias orbitPosition: orbitOrigin.position
-    property alias orbitRotation: orbitOrigin.eulerRotation
-    property alias cameraDistance: camera.z
+    // Where the view looks from. Compare gives both its viewports one camera, so they always show the same view.
+    property ViewportCamera viewCamera: ownCamera
+    // Whether the numpad and F keys drive this viewport.
+    property bool handlesKeys: isPrimary && visible
 
     // Display settings, remembered per machine; a launch flag overrides one for this run.
     property string lighting: "studio"
@@ -53,8 +54,6 @@ Item {
     // A 10 cm grid suits props; anything over 3 m reads better on a 1 m grid.
     readonly property real gridIntervalCm: largestExtent > 300 ? 100 : 10
 
-    readonly property real defaultYaw: 225
-    readonly property real defaultPitch: -22
     property int loadAttempts: 0
 
     // Only the primary viewport remembers its display settings; compare's take them from it. Each setting is copied
@@ -207,7 +206,9 @@ Item {
 
         const hasBounds = boundsMax.x > boundsMin.x || boundsMax.y > boundsMin.y || boundsMax.z > boundsMin.z
         if (hasBounds && framesOnLoad && framedExport !== frameKey) {
-            frame(launchOptions.frame === "figure")
+            frameThreeQuarter(launchOptions.frame === "figure")
+            if (launchOptions.view)
+                viewCamera.showAxisView(launchOptions.view)
             framedExport = frameKey
         }
         boundsWatch.running = !hasBounds
@@ -256,8 +257,8 @@ Item {
         }
     }
 
-    // Look at the model's bounds from the default three-quarter view, from the -X -Y side and slightly above.
-    // With `withFigure`, the 180 cm figure beside it is framed too, to judge the model's size against it.
+    // Fit the model's bounds in view from where the camera looks now (Home, numpad .). With `withFigure`, the
+    // 180 cm figure beside it is framed too, to judge the model's size against it.
     function frame(withFigure) {
         let minimum = boundsMin
         let maximum = boundsMax
@@ -269,32 +270,31 @@ Item {
             maximum = Qt.vector3d(Math.max(maximum.x, figureMax.x), Math.max(maximum.y, figureMax.y),
                                   Math.max(maximum.z, figureMax.z))
         }
-        const centre = minimum.plus(maximum).times(0.5)
-        const radius = Math.max(maximum.minus(minimum).length() / 2, 1)
-        orbitOrigin.position = centre
-        orbitOrigin.eulerRotation = Qt.vector3d(defaultPitch, defaultYaw, 0)
-        camera.z = radius / Math.sin(camera.fieldOfView * Math.PI / 360) * 1.1
+        viewCamera.frame(minimum.plus(maximum).times(0.5), maximum.minus(minimum).length() / 2)
+    }
+
+    // Frame from the default three-quarter view, on the -X -Y side and slightly above (F, and on first showing).
+    function frameThreeQuarter(withFigure) {
+        viewCamera.resetDirection()
+        frame(withFigure)
     }
 
     function applyBookmark(targetX, targetY, targetZ, yaw, pitch, distance) {
-        orbitOrigin.position = toQt(Qt.vector3d(targetX, targetY, targetZ))
-        orbitOrigin.eulerRotation = Qt.vector3d(pitch, yaw, 0)
-        camera.z = distance
+        viewCamera.place(toQt(Qt.vector3d(targetX, targetY, targetZ)), yaw, pitch, distance)
     }
 
     function saveBookmark(name) {
-        const target = toUnreal(orbitOrigin.position)
-        studio.saveBookmark(name, target.x, target.y, target.z, orbitOrigin.eulerRotation.y,
-                            orbitOrigin.eulerRotation.x, camera.z)
+        const target = toUnreal(viewCamera.pivot)
+        studio.saveBookmark(name, target.x, target.y, target.z, viewCamera.yaw, viewCamera.pitch, viewCamera.distance)
     }
 
     // Freeze the 3D view as it is, camera recorded, and open it in the markup editor.
     function markUpFrame() {
         const framePath = studio.markupEditor.newFramePath()
-        const target = toUnreal(orbitOrigin.position)
-        const yaw = orbitOrigin.eulerRotation.y
-        const pitch = orbitOrigin.eulerRotation.x
-        const distance = camera.z
+        const target = toUnreal(viewCamera.pivot)
+        const yaw = viewCamera.yaw
+        const pitch = viewCamera.pitch
+        const distance = viewCamera.distance
         const label = studio.selectedName + " viewport frame"
         view.grabToImage(result => {
             if (!result.saveToFile(framePath)) {
@@ -305,9 +305,14 @@ Item {
         })
     }
 
+    ViewportCamera {
+        id: ownCamera
+    }
+
     View3D {
         id: view
         anchors.fill: parent
+        camera: viewport.viewCamera.isOrthographic ? orthographicCamera : perspectiveCamera
 
         environment: SceneEnvironment {
             clearColor: Theme.viewportBackground
@@ -325,17 +330,31 @@ Item {
             }
         }
 
-        // The orbit pivot. The camera and the light rig hang off it, so the lighting stays the same from every
-        // side: a key from above left, a fill from the right, a rim from behind.
+        // The orbit pivot, never drawn. The cameras and the light rig hang off it, so the lighting stays the same
+        // from every side: a key from above left, a fill from the right, a rim from behind.
         Node {
             id: orbitOrigin
+            position: viewport.viewCamera.pivot
+            eulerRotation: Qt.vector3d(viewport.viewCamera.pitch, viewport.viewCamera.yaw, 0)
 
             PerspectiveCamera {
-                id: camera
-                z: 500
-                fieldOfView: 40
+                id: perspectiveCamera
+                z: viewport.viewCamera.distance
+                fieldOfView: viewport.viewCamera.fieldOfView
                 clipNear: Math.max(0.1, z * 0.002)
                 clipFar: Math.max(100000, z * 50)
+            }
+
+            // Scaled to show the same height at the pivot as perspective does, so switching keeps the model's size.
+            // It stands well back along the same line, so nothing between it and the pivot is clipped.
+            OrthographicCamera {
+                id: orthographicCamera
+                z: viewport.viewCamera.distance + 50000
+                horizontalMagnification: verticalMagnification
+                // Before the first layout the view is 0 px high, and a magnification must be positive.
+                verticalMagnification: Math.max(view.height, 1) / viewport.viewCamera.viewHeight
+                clipNear: 1
+                clipFar: z * 2
             }
 
             DirectionalLight {
@@ -383,29 +402,18 @@ Item {
         }
     }
 
-    OrbitCameraController {
+    ViewportNavigation {
         anchors.fill: parent
-        origin: orbitOrigin
-        camera: camera
-        automaticClipping: false
+        viewCamera: viewport.viewCamera
+        handlesKeys: viewport.handlesKeys
+        onFrameRequested: viewport.frame(false)
+        onThreeQuarterFrameRequested: (withFigure) => viewport.frameThreeQuarter(withFigure)
     }
 
     FrameAnimation {
         id: boundsWatch
         running: false
         onTriggered: viewport.updateBounds()
-    }
-
-    Shortcut {
-        sequence: "F"
-        enabled: viewport.isPrimary && viewport.visible
-        onActivated: viewport.frame(false)
-    }
-
-    Shortcut {
-        sequence: "Shift+F"
-        enabled: viewport.isPrimary && viewport.visible
-        onActivated: viewport.frame(true)
     }
 
     StatsOverlay {
@@ -425,14 +433,31 @@ Item {
         viewport: viewport
     }
 
-    Label {
-        visible: viewport.isPrimary
+    ColumnLayout {
         anchors.bottom: parent.bottom
         anchors.left: parent.left
+        anchors.right: parent.right
         anchors.margins: Theme.gap * 1.5
-        text: "Drag to orbit, Ctrl+drag to pan, wheel to zoom, F to frame, Shift+F to frame with the figure"
-        color: Theme.textDim
-        font.pixelSize: Theme.fontSmall
+        spacing: 2
+
+        // Which view this is, as Blender's viewport says it: "Front orthographic", "User perspective".
+        Label {
+            visible: viewport.hasModel
+            text: viewport.viewCamera.viewLabel
+            color: Theme.text
+            font.pixelSize: Theme.fontSmall
+        }
+
+        Label {
+            visible: viewport.isPrimary
+            Layout.fillWidth: true
+            wrapMode: Text.WordWrap
+            text: "Middle or left drag to orbit, Shift+drag or right drag to pan, Ctrl+drag or wheel to zoom.  "
+                  + "Numpad: 1 front, 3 right, 7 top (Ctrl+ opposite), 5 orthographic, 2 4 6 8 orbit, 9 flip, "
+                  + ". or Home to frame.  F three-quarter view, Shift+F with the figure."
+            color: Theme.textDim
+            font.pixelSize: Theme.fontSmall
+        }
     }
 
     BusyIndicator {

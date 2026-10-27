@@ -120,6 +120,8 @@ def _add_screenshot_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--direct", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--tab", choices=("chat", "refs", "readme"), help=argparse.SUPPRESS)
     parser.add_argument("--frame", choices=("model", "figure"), help=argparse.SUPPRESS)
+    # The numpad views (`AxisView` in gui/camera.py, spelled out here so the command line never loads Qt).
+    parser.add_argument("--view", choices=("front", "back", "right", "left", "top", "bottom"), help=argparse.SUPPRESS)
     parser.add_argument("--window-size", default="1600x1000", help=argparse.SUPPRESS)
     parser.add_argument("--revision", type=int, help=argparse.SUPPRESS)
     parser.add_argument("--compare", choices=("renders", "models"), help=argparse.SUPPRESS)
@@ -143,6 +145,7 @@ def _run_gui(arguments: argparse.Namespace) -> int:
             ("direct", arguments.direct),
             ("tab", arguments.tab),
             ("frame", arguments.frame),
+            ("view", arguments.view),
         )
         if value
     }

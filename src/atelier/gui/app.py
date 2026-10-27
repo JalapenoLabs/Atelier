@@ -31,6 +31,8 @@ from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtQuick import QQuickWindow
 from PySide6.QtQuickControls2 import QQuickStyle
 
+# Imported for its side effect: registering `ViewportCamera` as a QML type (`import Atelier`) before any QML loads.
+import atelier.gui.camera  # noqa: F401
 from atelier.gui.backend import RpcBackend
 from atelier.gui.studio import DaemonState, Studio
 from atelier.gui.tasks import TaskRunner
@@ -74,7 +76,7 @@ class GuiOptions(BaseModel):
     markup_file: Path | None = Field(default=None, description="A markup.json to put on the editor's capture.")
     view_options: dict[str, object] = Field(
         default_factory=dict,
-        description="Viewport and pane settings applied at start (lighting, wireframe, collision, tab).",
+        description="Viewport and pane settings applied at start (lighting, wireframe, collision, view, tab).",
     )
     window_size: tuple[int, int] = _DEFAULT_WINDOW_SIZE
 
