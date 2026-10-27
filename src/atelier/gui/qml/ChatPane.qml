@@ -10,10 +10,10 @@ Item {
     readonly property var chat: studio.chatModel
     readonly property var statusColors: ({
         "stopped": Theme.textDim,
-        "starting": Theme.statusColor("in-review"),
-        "idle": Theme.statusColor("approved"),
+        "starting": Theme.warning,
+        "idle": Theme.success,
         "running": Theme.accent,
-        "failed": Theme.statusColor("changes-requested")
+        "failed": Theme.danger
     })
 
     Label {
@@ -223,8 +223,8 @@ Item {
                             Label {
                                 text: !entry.is_done ? "…" : entry.is_error ? "✕" : "✓"
                                 color: !entry.is_done ? Theme.accent
-                                       : entry.is_error ? Theme.statusColor("changes-requested")
-                                       : Theme.statusColor("approved")
+                                       : entry.is_error ? Theme.danger
+                                       : Theme.success
                                 font.bold: true
                             }
                             Label {
@@ -258,7 +258,7 @@ Item {
                             wrapMode: Text.WrapAnywhere
                             maximumLineCount: summary.isOpen ? 40 : 3
                             elide: Text.ElideRight
-                            color: entry.is_error ? Theme.statusColor("changes-requested") : Theme.textDim
+                            color: entry.is_error ? Theme.danger : Theme.textDim
                             font.family: "monospace"
                             font.pixelSize: Theme.fontSmall
                         }
@@ -288,7 +288,7 @@ Item {
                         horizontalAlignment: Text.AlignHCenter
                         text: entry.kind === "result" ? entry.text + " · " + entry.time : entry.text
                         wrapMode: Text.Wrap
-                        color: entry.is_error ? Theme.statusColor("changes-requested") : Theme.textDim
+                        color: entry.is_error ? Theme.danger : Theme.textDim
                         font.pixelSize: Theme.fontSmall
                         font.italic: entry.kind === "notice"
                     }

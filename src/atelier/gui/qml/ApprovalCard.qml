@@ -27,8 +27,8 @@ Rectangle {
 
     implicitHeight: column.implicitHeight + 20
     radius: 6
-    color: isPending ? "#3a2f1c" : Theme.panelRaised
-    border.color: isPending ? Theme.statusColor("in-review") : Theme.border
+    color: isPending ? Theme.pendingSurface : Theme.panelRaised
+    border.color: isPending ? Theme.warning : Theme.border
 
     ColumnLayout {
         id: column
@@ -44,7 +44,7 @@ Rectangle {
             Label {
                 text: "Approval"
                 font.bold: true
-                color: card.isPending ? Theme.statusColor("in-review") : Theme.textDim
+                color: card.isPending ? Theme.warning : Theme.textDim
             }
             Label {
                 visible: card.sourceName !== ""
@@ -57,8 +57,8 @@ Rectangle {
             }
             Label {
                 text: card.statusLabels[card.status] || card.status
-                color: card.status === "allowed" ? Theme.statusColor("approved")
-                       : card.status === "denied" ? Theme.statusColor("changes-requested") : Theme.textDim
+                color: card.status === "allowed" ? Theme.success
+                       : card.status === "denied" ? Theme.danger : Theme.textDim
                 font.pixelSize: Theme.fontSmall
             }
         }

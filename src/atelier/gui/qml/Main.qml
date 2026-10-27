@@ -15,6 +15,7 @@ ApplicationWindow {
     // Shown by app.py, unless it is rendering a screenshot of the hidden window.
     visible: false
 
+    // The stock controls (Fusion) take every colour from the theme too, so they change with it.
     palette {
         window: Theme.window
         windowText: Theme.text
@@ -23,8 +24,11 @@ ApplicationWindow {
         text: Theme.text
         button: Theme.panelRaised
         buttonText: Theme.text
+        brightText: Theme.text
         highlight: Theme.selection
-        highlightedText: "#ffffff"
+        highlightedText: Theme.selectionText
+        accent: Theme.accent
+        link: Theme.accent
         placeholderText: Theme.textDim
         toolTipBase: Theme.panelRaised
         toolTipText: Theme.text
@@ -32,7 +36,13 @@ ApplicationWindow {
         midlight: Theme.panelRaised
         mid: Theme.border
         dark: Theme.window
-        shadow: "#000000"
+        shadow: Theme.shadow
+
+        disabled {
+            windowText: Theme.textDim
+            text: Theme.textDim
+            buttonText: Theme.textDim
+        }
     }
 
     header: HeaderBar {

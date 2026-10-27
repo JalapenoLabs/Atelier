@@ -309,20 +309,23 @@ Item {
         id: view
         anchors.fill: parent
 
+        // Transparent: the backdrop and the grid are drawn under it, by ViewportGrid.
         environment: SceneEnvironment {
-            clearColor: Theme.viewportBackground
-            backgroundMode: SceneEnvironment.Color
+            backgroundMode: SceneEnvironment.Transparent
             antialiasingMode: SceneEnvironment.MSAA
             antialiasingQuality: SceneEnvironment.High
             debugSettings: DebugSettings {
                 wireframeEnabled: viewport.wireframe
             }
+        }
 
-            // Unreal units: 1 = 1 cm, on the ground plane (Unreal Z = 0).
-            InfiniteGrid {
-                visible: viewport.showGrid
-                gridInterval: viewport.gridIntervalCm
-            }
+        // Unreal units: 1 = 1 cm, on the ground plane (Unreal Z = 0).
+        ViewportGrid {
+            anchors.fill: parent
+            z: -1
+            sourceCamera: camera
+            gridIntervalCm: viewport.gridIntervalCm
+            showGrid: viewport.showGrid
         }
 
         // The orbit pivot. The camera and the light rig hang off it, so the lighting stays the same from every
@@ -341,7 +344,7 @@ Item {
             DirectionalLight {
                 eulerRotation: Qt.vector3d(-38, -32, 0)
                 brightness: 1.15
-                ambientColor: Qt.rgba(0.16, 0.16, 0.18, 1)
+                ambientColor: Theme.sceneAmbient
             }
             DirectionalLight {
                 eulerRotation: Qt.vector3d(-8, 55, 0)
@@ -368,14 +371,14 @@ Item {
 
         PrincipledMaterial {
             id: clayMaterial
-            baseColor: "#b9b9b9"
+            baseColor: Theme.clay
             roughness: 0.75
             metalness: 0
         }
 
         PrincipledMaterial {
             id: collisionMaterial
-            baseColor: "#55d17f"
+            baseColor: Theme.collision
             opacity: 0.28
             alphaMode: PrincipledMaterial.Blend
             cullMode: Material.NoCulling
