@@ -60,7 +60,7 @@ Rectangle {
         Label {
             visible: studio.conversionState === "running" || studio.conversionState === "failed"
             text: studio.conversionState === "running" ? "Measuring with Blender…" : "Blender could not convert this export"
-            color: studio.conversionState === "failed" ? Theme.statusColor("changes-requested") : Theme.textDim
+            color: studio.conversionState === "failed" ? Theme.danger : Theme.textDim
             font.pixelSize: Theme.fontSmall
         }
 

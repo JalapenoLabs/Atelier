@@ -119,7 +119,7 @@ Item {
     Rectangle {
         anchors.fill: parent
         visible: dropArea.containsDrag
-        color: "#332d4a73"
+        color: Theme.dropHighlight
         border.color: Theme.accent
         border.width: 2
         radius: 6

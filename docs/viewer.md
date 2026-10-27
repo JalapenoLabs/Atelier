@@ -49,7 +49,8 @@ A three-pane studio:
 
 Panel sizes, the selected tab, the last project, the viewport's display settings and each project's open tree rows
 (`sourceTree/<project>/`) are remembered per machine, in Qt's settings (`~/.config/JalapenoLabs/Atelier.conf`).
-Everything else the window shows comes from the core.
+Everything else the window shows comes from the core, apart from its colours, which come from a theme file and
+follow it live (see `theming.md`).
 
 ## 3D viewport
 
@@ -93,8 +94,9 @@ Exports, the grid and the scale figure use Unreal's frame: Z up, centimetres. Qt
 (x, y, z) is the Unreal point (x, z, y). The Blender model is already physically the Unreal one (Unreal reads
 Blender's Y as -Y), so nothing is mirrored.
 
-- **Grid**: Qt's infinite grid on the ground (Unreal Z = 0), every 10 cm for a model up to 3 m across and every
-  1 m beyond, with the X (red) and Y (blue) axes.
+- **Grid**: a grid on the ground (Unreal Z = 0), every 10 cm for a model up to 3 m across and every 1 m beyond,
+  with every tenth line stronger and the X (red) and Y (blue) axes, fading towards the horizon. It is drawn in a
+  view of its own under the model's, in the theme's colours (see `theming.md`).
 - **Scale reference**: a 180 cm figure standing on the ground off the model's +X -Y corner, about as far from the
   default camera as the model itself.
 
@@ -167,7 +169,7 @@ list), with `gui/chat.py` (the selected source's worker
 and chat) and `gui/markup.py` (the markup editor, and flattening markup onto its image) beside it, and plain
 functions build the tree (`gui/tree.py`), the gallery groups (`gui/gallery.py`) and the filmstrip rows
 (`gui/revisions.py`). Backend calls run off the UI thread through `gui/tasks.py`: catalog work in order on one
-thread, conversions on their own. Show in Blender is the window's own (`gui/desktop.py`).
+thread, conversions on their own. Show in Blender is the window's own (`gui/desktop.py`), and so is the theme (`gui/theme.py`).
 
 ## Development
 

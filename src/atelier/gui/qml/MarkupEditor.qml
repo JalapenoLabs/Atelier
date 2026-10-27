@@ -126,13 +126,13 @@ Rectangle {
                         height: pinRadius * 2
                         radius: pinRadius
                         color: editor.markup.pinColor
-                        border.color: "#ffffff"
+                        border.color: editor.markup.pinInkColor
                         border.width: Math.max(1.5, pinRadius * 0.18)
 
                         Label {
                             anchors.centerIn: parent
                             text: parent.number
-                            color: "#ffffff"
+                            color: editor.markup.pinInkColor
                             font.bold: true
                             font.pixelSize: parent.pinRadius * 1.2
                         }
@@ -227,7 +227,7 @@ Rectangle {
                             height: 24
                             radius: 12
                             color: modelData
-                            border.color: editor.markup.color === modelData ? "#ffffff" : "transparent"
+                            border.color: editor.markup.color === modelData ? Theme.text : "transparent"
                             border.width: 2
 
                             MouseArea {
@@ -279,7 +279,7 @@ Rectangle {
                             Label {
                                 anchors.centerIn: parent
                                 text: number
-                                color: "#ffffff"
+                                color: editor.markup.pinInkColor
                                 font.bold: true
                             }
                         }

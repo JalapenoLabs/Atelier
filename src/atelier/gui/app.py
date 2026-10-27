@@ -31,6 +31,8 @@ from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtQuick import QQuickWindow
 from PySide6.QtQuickControls2 import QQuickStyle
 
+# Importing the module registers the `Atelier.ThemeFile` QML singleton that Theme.qml reads.
+import atelier.gui.theme  # noqa: F401
 from atelier.gui.backend import RpcBackend
 from atelier.gui.studio import DaemonState, Studio
 from atelier.gui.tasks import TaskRunner

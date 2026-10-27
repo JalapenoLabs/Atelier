@@ -63,4 +63,5 @@ answer a worker's approval requests or set a source's status: those stay with yo
 | [revisions.md](docs/revisions.md)        | Snapshots, standard renders, compare, restore                 |
 | [workers.md](docs/workers.md)            | Claude Code workers, per-worker Blender, approvals, markup    |
 | [mcp.md](docs/mcp.md)                    | The manager-facing MCP tools                                  |
+| [theming.md](docs/theming.md)            | The theme file, its tokens, live reload, an Omarchy example   |
 | [roadmap.md](docs/roadmap.md)            | What comes after v1                                           |

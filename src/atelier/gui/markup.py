@@ -33,6 +33,8 @@ logger = logging.getLogger(__name__)
 # The stroke colours on offer: red, amber, cyan, green, each readable on a grey studio render.
 MARKUP_COLORS = ("#ff4d4d", "#ffc233", "#33d1ff", "#5ce65c")
 PIN_COLOR = "#ff4d4d"
+# The ring and number on a pin, in the editor and on the flattened image alike.
+PIN_INK_COLOR = "#ffffff"
 # Sizes as fractions of the image's longer side, so marks look the same on a thumbnail and on a 4K frame.
 _STROKE_WIDTH = 0.005
 _ARROW_HEAD = 0.025
@@ -103,7 +105,7 @@ def flatten_markup(capture: QImage, markup: Markup) -> QImage:
     painter.setFont(font)
     for pin in markup.pins:
         centre = point((pin.x, pin.y))
-        painter.setPen(QPen(QColor("#ffffff"), radius * 0.18))
+        painter.setPen(QPen(QColor(PIN_INK_COLOR), radius * 0.18))
         painter.setBrush(QBrush(QColor(PIN_COLOR)))
         painter.drawEllipse(centre, radius, radius)
         painter.drawText(
@@ -181,6 +183,9 @@ class MarkupEditor(QObject):
     def _get_pin_color(self) -> str:
         return PIN_COLOR
 
+    def _get_pin_ink_color(self) -> str:
+        return PIN_INK_COLOR
+
     def _get_strokes(self) -> list[dict[str, Any]]:
         return [
             {"tool": stroke.tool.value, "color": stroke.color, "points": [list(point) for point in stroke.points]}
@@ -203,6 +208,7 @@ class MarkupEditor(QObject):
     color = Property(str, _get_color, notify=changed)
     colors = Property(list, _get_colors, constant=True)
     pinColor = Property(str, _get_pin_color, constant=True)
+    pinInkColor = Property(str, _get_pin_ink_color, constant=True)
     strokes = Property(list, _get_strokes, notify=changed)
     pinRows = Property(QObject, _get_pin_rows, constant=True)
     canUndo = Property(bool, _get_can_undo, notify=changed)
