@@ -314,20 +314,25 @@ Item {
         anchors.fill: parent
         camera: viewport.viewCamera.isOrthographic ? orthographicCamera : perspectiveCamera
 
+        // Transparent: the backdrop and the grid are drawn under it, by ViewportGrid.
         environment: SceneEnvironment {
-            clearColor: Theme.viewportBackground
-            backgroundMode: SceneEnvironment.Color
+            backgroundMode: SceneEnvironment.Transparent
             antialiasingMode: SceneEnvironment.MSAA
             antialiasingQuality: SceneEnvironment.High
             debugSettings: DebugSettings {
                 wireframeEnabled: viewport.wireframe
             }
+        }
 
-            // Unreal units: 1 = 1 cm, on the ground plane (Unreal Z = 0).
-            InfiniteGrid {
-                visible: viewport.showGrid
-                gridInterval: viewport.gridIntervalCm
-            }
+        // Unreal units: 1 = 1 cm, on the ground plane (Unreal Z = 0).
+        ViewportGrid {
+            anchors.fill: parent
+            z: -1
+            perspectiveSource: perspectiveCamera
+            orthographicSource: orthographicCamera
+            isOrthographic: viewport.viewCamera.isOrthographic
+            gridIntervalCm: viewport.gridIntervalCm
+            showGrid: viewport.showGrid
         }
 
         // The orbit pivot, never drawn. The cameras and the light rig hang off it, so the lighting stays the same
@@ -346,21 +351,22 @@ Item {
             }
 
             // Scaled to show the same height at the pivot as perspective does, so switching keeps the model's size.
-            // It stands well back along the same line, so nothing between it and the pivot is clipped.
+            // It stands where the perspective camera does, so the grid fades the same from it, and its near plane
+            // reaches far behind it, since an orthographic view also sees what is behind the camera's position.
             OrthographicCamera {
                 id: orthographicCamera
-                z: viewport.viewCamera.distance + 50000
+                z: viewport.viewCamera.distance
                 horizontalMagnification: verticalMagnification
                 // Before the first layout the view is 0 px high, and a magnification must be positive.
                 verticalMagnification: Math.max(view.height, 1) / viewport.viewCamera.viewHeight
-                clipNear: 1
-                clipFar: z * 2
+                clipNear: -perspectiveCamera.clipFar
+                clipFar: perspectiveCamera.clipFar
             }
 
             DirectionalLight {
                 eulerRotation: Qt.vector3d(-38, -32, 0)
                 brightness: 1.15
-                ambientColor: Qt.rgba(0.16, 0.16, 0.18, 1)
+                ambientColor: Theme.sceneAmbient
             }
             DirectionalLight {
                 eulerRotation: Qt.vector3d(-8, 55, 0)
@@ -387,14 +393,14 @@ Item {
 
         PrincipledMaterial {
             id: clayMaterial
-            baseColor: "#b9b9b9"
+            baseColor: Theme.clay
             roughness: 0.75
             metalness: 0
         }
 
         PrincipledMaterial {
             id: collisionMaterial
-            baseColor: "#55d17f"
+            baseColor: Theme.collision
             opacity: 0.28
             alphaMode: PrincipledMaterial.Blend
             cullMode: Material.NoCulling

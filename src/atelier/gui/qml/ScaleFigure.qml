@@ -10,7 +10,7 @@ Node {
 
     PrincipledMaterial {
         id: figureMaterial
-        baseColor: "#7f8da8"
+        baseColor: Theme.scaleFigure
         roughness: 0.8
         opacity: 0.85
         alphaMode: PrincipledMaterial.Blend
