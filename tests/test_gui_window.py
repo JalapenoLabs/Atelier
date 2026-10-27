@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 from conftest import RunningDaemon
-from PySide6.QtCore import QUrl
+from PySide6.QtCore import QSettings, QUrl
 from PySide6.QtGui import QColor, QGuiApplication, QImage
 from PySide6.QtQml import QQmlApplicationEngine, QQmlError
 
@@ -34,7 +34,8 @@ def test_every_qml_file_loads_without_errors(
     qt_application.setOrganizationName("AtelierTests")
     qt_application.setApplicationName("AtelierTests")
     backend = RpcBackend(daemon.socket_path, state_root=tmp_path / "state")
-    studio = Studio(backend, TaskRunner())
+    settings = QSettings(str(tmp_path / "config" / "Atelier.conf"), QSettings.Format.IniFormat)
+    studio = Studio(backend, TaskRunner(), settings)
     engine = QQmlApplicationEngine()
     warnings: list[QQmlError] = []
     engine.warnings.connect(warnings.extend)
@@ -49,6 +50,9 @@ def test_every_qml_file_loads_without_errors(
         studio.openProject(str(project_root))
         wait_until(lambda: studio.property("projectName") == "FixtureProject")
         studio.selectSource("SourceArt/Weapons/Carbine/Carbine.blend")
+        # An open source, so the tree draws export rows too.
+        studio.toggleTreeRow("SourceArt/Weapons/Carbine/Carbine.blend")
+        assert any(row.kind == "export" for row in studio.property("sourceRows").rows)
         # A turn through the fake Claude Code, so the chat draws a prompt, the worker's text and the result.
         studio.chat.send("SAY Hello from the worker")
         wait_until(lambda: any(row.kind == "result" for row in studio.chat.property("rows").rows))
