@@ -6,8 +6,9 @@ with `PRAGMA user_version` and grown by appending to `_MIGRATIONS`, never by edi
 A source whose `.blend` disappears is marked missing rather than deleted. Its status and revisions survive a file that
 is briefly gone during a save or a move and comes back.
 
-The revision tables (migration 3) are read and written by `atelierd.revisions.store`, and the worker tables (migration
-4: sessions, feedback, pinned references) by `atelierd.workers.store`, over the same connection setup.
+The revision tables (migration 3) are read and written by `atelierd.revisions.store`, the worker tables (migration 4:
+sessions, feedback, pinned references) by `atelierd.workers.store`, and the review decision jobs (migration 5) by
+`atelierd.review.store`, over the same connection setup.
 
 A `sqlite3.Connection` may only be used by the thread that opened it, so each thread opens its own `CatalogStore`.
 """
@@ -33,10 +34,11 @@ from atelierd.catalog.models import (
 logger = logging.getLogger(__name__)
 
 _STATUS_VALUES = ", ".join(f"'{status.value}'" for status in SourceStatus)
-# Written out rather than read from `atelierd.revisions`, which imports this module: an applied migration never changes
-# anyway, so a later trigger or kind needs a migration of its own.
+# Written out rather than read from `atelierd.revisions` and `atelierd.review`, which import this module: an applied
+# migration never changes anyway, so a later trigger, kind or state needs a migration of its own.
 _TRIGGER_VALUES = "'baseline', 'change', 'worker-turn', 'pre-restore', 'restore'"
 _FILE_KIND_VALUES = "'blend', 'builder', 'readme', 'export', 'render'"
+_DECISION_JOB_STATE_VALUES = "'queued', 'writing', 'posting', 'posted', 'failed'"
 
 # Each entry is one schema version: the statements that take the database from the previous version to it.
 _MIGRATIONS: tuple[tuple[str, ...], ...] = (
@@ -154,6 +156,28 @@ _MIGRATIONS: tuple[tuple[str, ...], ...] = (
             PRIMARY KEY (source_id, path)
         )
         """,
+    ),
+    (
+        # Review decisions, each a job that writes the ticket's comment and posts it. `decision` and `item` are JSON:
+        # what the reviewer decided, and the queue item as it was then; `answer` is the comment and direction notes
+        # once written, and `posted_comment` the comment once it is on the ticket, so a retry never repeats either.
+        f"""
+        CREATE TABLE decision_jobs (
+            id INTEGER PRIMARY KEY,
+            ticket TEXT NOT NULL,
+            state TEXT NOT NULL CHECK (state IN ({_DECISION_JOB_STATE_VALUES})),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            decision TEXT NOT NULL,
+            item TEXT NOT NULL,
+            answer TEXT,
+            are_notes_saved INTEGER NOT NULL DEFAULT 0,
+            posted_comment TEXT,
+            error TEXT NOT NULL DEFAULT '',
+            raw_output TEXT NOT NULL DEFAULT ''
+        )
+        """,
+        "CREATE INDEX decision_jobs_by_ticket ON decision_jobs (ticket, id)",
     ),
 )
 

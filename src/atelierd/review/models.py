@@ -3,6 +3,9 @@
 A queue item is a ticket, not a source: some tickets (a UI design, a sound) have no source at all, and those that do
 link to it through a ticket file (`links.py`). Paths to downloaded files are absolute, because the window reads them
 straight from disk the way it reads renders.
+
+A decision on a ticket travels as a `DecisionJob`: the `Decision` the reviewer made, the `WrittenDecision` Claude
+wrote from it, and the comment once posted (`jobs.py`).
 """
 
 from __future__ import annotations
@@ -10,9 +13,10 @@ from __future__ import annotations
 from enum import StrEnum
 from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from atelierd.config import ReviewVerdict
+from atelierd.trackers.models import PostedComment
 
 
 class _ReviewModel(BaseModel):
@@ -118,3 +122,114 @@ class PostedDecision(_ReviewModel):
     stage: str
     attachments: tuple[str, ...] = Field(default=(), description="The files attached to the comment, by name.")
     moved_linked: tuple[str, ...] = Field(default=(), description="Linked tickets the on-approve rules moved.")
+
+
+# ========================================================================================
+# Decision jobs
+# ========================================================================================
+
+
+class DecisionRequest(_ReviewModel):
+    """A decision as the window submits it: one ticket, or many sharing one note (a bulk decision)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    tickets: tuple[str, ...] = Field(min_length=1, description="The tickets decided; more than one is a bulk decision.")
+    verdict: ReviewVerdict
+    takes: tuple[str, ...] = Field(
+        default=(),
+        description="The reviewer's words, every take in order, verbatim. A bulk decision's note is shared by all.",
+    )
+    drawings: dict[str, tuple[Path, ...]] = Field(
+        default_factory=dict,
+        description="Drawings to attach to the comment, by ticket: image files the window saved.",
+    )
+
+    @field_validator("takes")
+    @classmethod
+    def _takes_have_words(cls, takes: tuple[str, ...]) -> tuple[str, ...]:
+        if any(not take.strip() for take in takes):
+            raise ValueError("A take holds no words; leave it out instead")
+        return takes
+
+    @field_validator("tickets")
+    @classmethod
+    def _tickets_are_distinct(cls, tickets: tuple[str, ...]) -> tuple[str, ...]:
+        if len(set(tickets)) != len(tickets):
+            raise ValueError("A ticket is listed twice in one decision")
+        return tickets
+
+
+class Decision(_ReviewModel):
+    """What the reviewer decided about one ticket: the record a decision job writes its comment from."""
+
+    ticket: str
+    verdict: ReviewVerdict
+    takes: tuple[str, ...] = Field(default=(), description="The reviewer's words, every take in order, verbatim.")
+    drawings: tuple[Path, ...] = Field(
+        default=(),
+        description="The job's own copies of the drawings, named as they are attached (`WAY-60-markup-1.png`).",
+    )
+    bulk_tickets: tuple[str, ...] = Field(
+        default=(),
+        description="For a bulk decision, every ticket its shared note was given for, this one included.",
+    )
+
+    @property
+    def is_bulk(self) -> bool:
+        """Whether one note was given for many tickets."""
+        return bool(self.bulk_tickets)
+
+
+class DirectionNote(_ReviewModel):
+    """Feedback for all the art or a whole category, split out of a decision's words for the art direction."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    scope: str = Field(min_length=1, description="What it applies to, such as 'all weapons' or 'all the art'.")
+    words: str = Field(min_length=1, description="The reviewer's exact words.")
+
+
+class WrittenDecision(_ReviewModel):
+    """A decision job's answer from Claude: the ticket's comment and the direction notes split out of it."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    comment: str = Field(min_length=1, description="The comment in the reviewer's voice, posted as it is.")
+    direction_notes: tuple[DirectionNote, ...] = ()
+
+
+class DecisionJobState(StrEnum):
+    """Where a decision job is: waiting, Claude writing its comment, the daemon posting it, done, or failed."""
+
+    QUEUED = "queued"
+    WRITING = "writing"
+    POSTING = "posting"
+    POSTED = "posted"
+    FAILED = "failed"
+
+
+class DecisionJob(_ReviewModel):
+    """One decision on one ticket, on its way to the tracker."""
+
+    id: int
+    decision: Decision
+    state: DecisionJobState
+    created_at: str
+    updated_at: str
+    answer: WrittenDecision | None = Field(default=None, description="The comment and direction notes, once written.")
+    are_notes_saved: bool = Field(default=False, description="Whether its direction notes are in the notes file.")
+    posted_comment: PostedComment | None = Field(default=None, description="Its comment, once on the ticket.")
+    error: str = Field(default="", description="Why it failed, when it did.")
+    raw_output: str = Field(default="", description="What `claude -p` printed, kept when its answer was refused.")
+
+    @property
+    def ticket(self) -> str:
+        """The ticket decided."""
+        return self.decision.ticket
+
+
+class DecisionJobEvent(_ReviewModel):
+    """A decision job changed state; the event carries the job as it is now."""
+
+    job: DecisionJob

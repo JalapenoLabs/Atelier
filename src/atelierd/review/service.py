@@ -54,7 +54,7 @@ from atelierd.trackers import PostedComment, Ticket, TicketAttachment, Tracker, 
 logger = logging.getLogger(__name__)
 
 # A ticket id becomes a folder name, and comes from the tracker, so it must look like one before it touches a path.
-_TICKET_ID_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_]*-\d+$")
+TICKET_ID_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_]*-\d+$")
 # Attachment names come from whoever uploaded them: anything that could step outside a folder is replaced.
 _UNSAFE_NAME_PATTERN = re.compile(r"[/\\\x00]")
 
@@ -221,7 +221,7 @@ class ReviewService:
         downloads: list[tuple[str, TicketAttachment, Path]] = []
         deliveries: dict[str, ReviewDelivery] = {}
         for ticket in tickets:
-            if not _TICKET_ID_PATTERN.match(ticket.id):
+            if not TICKET_ID_PATTERN.match(ticket.id):
                 logger.warning(f"[Review] '{ticket.id}' does not look like a ticket id; not downloading its files")
                 continue
             delivery_comment = next(
@@ -316,6 +316,7 @@ class ReviewService:
         comment: str,
         attachments: Sequence[Path] = (),
         posted: PostedComment | None = None,
+        on_posted: Callable[[PostedComment], None] | None = None,
     ) -> PostedDecision:
         """Post a decision on a ticket as the reviewer, move its stage, and apply the on-approve rules.
 
@@ -326,6 +327,8 @@ class ReviewService:
             attachments: files to attach to that comment (drawings).
             posted: the comment a failed attempt already posted (from its `DecisionError`), so retrying it never
                 posts the comment twice.
+            on_posted: called with the comment as soon as it is on the ticket, before the steps after it, so a
+                caller can keep it somewhere that outlives this process.
 
         Raises:
             ConfigError: atelier.toml cannot be read.
@@ -344,6 +347,8 @@ class ReviewService:
         try:
             if posted is None:
                 posted = tracker.post_comment(ticket, comment)
+                if on_posted:
+                    on_posted(posted)
             if attachments:
                 tracker.attach_to_comment(posted, attachments)
             tracker.move_stage(ticket, stage)

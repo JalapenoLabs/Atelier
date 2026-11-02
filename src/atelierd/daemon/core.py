@@ -11,11 +11,13 @@ Both front doors are thin adapters over this module: the GUI's JSON-RPC (`atelie
   `atelierd.exports.convert_export(runtime.project, path)`.
 - `ProjectRuntime.review` (`ReviewService`) is the project's review queue, read from its ticket tracker (see
   `docs/review.md`); the tracker is opened through the core's `open_tracker`, which the tests replace with a fake.
+  `ProjectRuntime.decisions` (`DecisionJobs`) turns each review decision into a background `claude -p` job that
+  writes the ticket's comment, which the daemon then posts through the review queue.
 - `AtelierCore.approvals` (`ApprovalBroker`) holds every escalated tool call, across projects.
 
 Everything that happens is reported to subscribers as `(project name, event)` on whichever thread it happened, the
-way the window's backend reports it: catalog changes, revisions, worker output, approvals and review queue changes.
-Each subscriber hops the event to its own thread (the RPC to its event loop).
+way the window's backend reports it: catalog changes, revisions, worker output, approvals, review queue changes and
+decision jobs. Each subscriber hops the event to its own thread (the RPC to its event loop).
 
 Every method may block (scans, SQLite, Blender, hashing), so the asyncio front doors call them in a thread.
 """
@@ -30,7 +32,7 @@ from pathlib import Path
 from atelierd.catalog import Catalog, CatalogEvent, CatalogWatcher, ScanResult
 from atelierd.project import Project, open_project
 from atelierd.registry import load_registry, register_project, resolve_project_root
-from atelierd.review import ReviewEvent, ReviewService
+from atelierd.review import DecisionJobEvent, DecisionJobs, ReviewEvent, ReviewService
 from atelierd.revisions import RevisionEvent, Revisions, RevisionTracker
 from atelierd.trackers import TrackerOpener, open_tracker
 from atelierd.workers import (
@@ -47,7 +49,7 @@ from atelierd.workers.models import Approval
 logger = logging.getLogger(__name__)
 
 # Everything the core reports as it happens.
-type CoreEvent = CatalogEvent | RevisionEvent | WorkerEvent | ApprovalEvent | ReviewEvent
+type CoreEvent = CatalogEvent | RevisionEvent | WorkerEvent | ApprovalEvent | ReviewEvent | DecisionJobEvent
 type CoreListener = Callable[[str, CoreEvent], None]
 
 
@@ -81,6 +83,8 @@ class ProjectRuntime:
         self.revisions.start()
         self.review = ReviewService(project, self.catalog, open_tracker, emit_event)
         self.review.start()
+        self.decisions = DecisionJobs(project, self.review, settings.claude_command, emit_event)
+        self.decisions.start()
 
         def on_catalog_event(event: CatalogEvent) -> None:
             emit_event(event)
@@ -98,8 +102,9 @@ class ProjectRuntime:
         logger.info(f"[Core] Opened {name} at {project.root} (state in {project.state_dir})")
 
     def close(self) -> None:
-        """Stop the workers, the review poll, the watcher and the revision tracker."""
+        """Stop the workers, the decision jobs, the review poll, the watcher and the revision tracker."""
         self.workers.stop_all()
+        self.decisions.stop()
         self.review.stop()
         self._watch_stop.set()
         self._watch_thread.join(timeout=5)

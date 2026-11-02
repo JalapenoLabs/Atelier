@@ -695,7 +695,7 @@ class Studio(QObject):
                 self._refresh_history()
             return
         if not isinstance(event, CatalogEvent):
-            # The window has no view of the review queue, so its events have nothing to update.
+            # The window has no view of the review queue or its decision jobs, so their events have nothing to update.
             logger.debug(f"[Studio] No view follows {type(event).__name__}")
             return
 

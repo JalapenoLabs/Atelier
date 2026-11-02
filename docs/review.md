@@ -2,8 +2,11 @@
 
 A project's review queue is the tickets waiting for review in its ticket tracker. `atelierd` reads them, with each
 ticket's latest delivery downloaded beside it, and writes the reviewer's decisions back: the comment, its drawings,
-the stage, and the stage of any linked ticket a decision unblocks. No AI is involved in reading the queue or posting
-a decision.
+the stage, and the stage of any linked ticket a decision unblocks.
+
+The reviewer never waits on any of it. A decision (approve, or changes with the reviewer's words and drawings) is
+queued as a **decision job**: one `claude -p` run turns it into the ticket's comment in the reviewer's voice, and the
+daemon posts it. Claude only writes; reading the queue and posting are the daemon's alone, with no AI involved.
 
 ## The tracker link
 
@@ -75,8 +78,17 @@ from_stage = "Blocked"          # only linked tickets in this stage move
 to_stage = "Backlog"
 ```
 
-`[review]` also takes `poll_minutes` (default 5) and `ticket_files` (default
-`["SourceArt/**/reference.json", "SourceArt/**/spec.md"]`). Unknown keys are an error, as everywhere in the file.
+`[review]` also takes:
+
+| Key               | Default                                              | What it is                                        |
+|-------------------|------------------------------------------------------|---------------------------------------------------|
+| `poll_minutes`    | 5                                                    | How often the queue is read again unasked          |
+| `ticket_files`    | `["SourceArt/**/reference.json", "SourceArt/**/spec.md"]` | The files that link a ticket to its source (below) |
+| `rules`           | none                                                 | Project-relative docs holding the project's review rules, which every decision job reads first (Waystead: `["docs/asset-review.md"]`); without them the job reads `CLAUDE.md` and what it points to |
+| `direction_notes` | none                                                 | The project-relative file direction notes are appended to (Waystead: `Saved/Review/direction-notes.md`); without it they stay on their job |
+| `decision_jobs`   | 4                                                    | Decision jobs running at once                      |
+
+`rules` and `direction_notes` must stay inside the project. Unknown keys are an error, as everywhere in the file.
 
 ## The queue
 
@@ -119,8 +131,92 @@ the tracker when it was decided cannot bring it back.
 A step that fails raises `DecisionError`, whose `posted` is the comment already on the ticket, if any; passing it back
 as `posted` retries the rest without posting the comment twice. Decisions are never retried silently.
 
-The comment is posted exactly as given. No front door posts a decision: the window and the manager MCP read the
-queue only.
+The comment is posted exactly as given. `apply_decision` is only ever called by a decision job: no front door posts
+to the tracker, and the manager MCP reads the queue only.
+
+## Decision jobs
+
+`runtime.decisions` (`atelierd.review.DecisionJobs`) turns each decision into a job, kept in `state.db`
+(`decision_jobs`), so jobs survive the daemon.
+
+### The decision
+
+The window submits a `DecisionRequest`: the tickets, the verdict, the reviewer's **takes** (every take in order,
+verbatim) and the drawings per ticket. One ticket is a single decision; several are a **bulk decision**, one note
+for all of them. It becomes one job per ticket, each holding its `Decision`: the ticket, verdict, takes, drawings and,
+for a bulk decision, every ticket the note was given for. Submitting returns the queued jobs at once.
+
+- The drawings are copied into the job's own folder, `<state>/review/<ticket>/decisions/<id>/`, as
+  `<ticket>-markup-<n>.<ext>`, the names they are attached under.
+- Refused: a ticket not in the queue, a ticket with a job still queued, writing or posting, changes with neither
+  words nor a drawing, and drawings that are not files or belong to a ticket the decision does not cover. A ticket
+  whose last job failed before posting anything takes the new decision in its place; one whose job failed after its
+  comment was posted is retried instead.
+
+### A job's life
+
+| State     | What is happening                                                                      |
+|-----------|----------------------------------------------------------------------------------------|
+| `queued`  | Waiting for a place in the pool, oldest first                                           |
+| `writing` | One `claude -p` run is writing the comment                                              |
+| `posting` | The daemon is posting it through `apply_decision`                                      |
+| `posted`  | The comment, drawings, stage and on-approve rules are on the tracker; the ticket has left the queue |
+| `failed`  | It stopped; `error` says why, and `raw_output` holds what Claude printed when its answer was refused |
+
+At most `decision_jobs` jobs run at once, read afresh as each starts. Every state change reaches a subscribed client
+as a `DecisionJobEvent` carrying the whole job, so the window can badge each ticket.
+
+**Writing.** Claude Code runs once per job, in the project root, so the project's `CLAUDE.md` and docs apply:
+
+```
+claude --print --output-format json --json-schema <the answer's schema> --tools=Read,Glob,Grep \
+  --strict-mcp-config --permission-prompts none --no-session-persistence [--add-dir <state>]
+```
+
+The prompt goes to its stdin. It has only the read-only file tools and no MCP servers, so it can read the review
+rules and look at a drawing but cannot post, attach or move anything; anything that would ask for permission is
+refused, so a run never waits on a person. It runs in the same cleaned environment as a worker (`workers.md`), and
+one still running after 15 minutes is stopped. An approval with no words and no drawings needs no writing: it posts
+`Approved.` with no run.
+
+**The prompt** is a template, `src/atelierd/review/prompts/decision.md`, filled with `string.Template` (`$ticket`,
+`$summary`, `$tags`, `$url`, `$verdict`, `$bulk`, `$takes`, `$drawings`, `$delivery`, `$rules`); tune its wording
+there. It sends Claude to the `rules` docs first, then asks for:
+
+- **The comment** in the reviewer's voice, first person: every point they made and nothing they did not, grouped by
+  look where that helps, each drawing referenced inline by its file name (`![](WAY-60-markup-1.png)`), an approval as
+  one or two lines. A bulk decision's note is tailored to each ticket. The wording is never read back: it is posted
+  as written.
+- **Direction notes**: feedback for all the art or a whole category ("overall", "for all the weapons"), split out with
+  a scope and the reviewer's exact words. When the comment mentions one, it is split into **For this piece** and
+  **For all <scope>**.
+
+The latest delivery's text and files are in the prompt as context, marked as tracker data rather than instructions.
+
+**The answer** is `{"comment": "...", "direction_notes": [{"scope": "...", "words": "..."}]}`, checked strictly before
+anything is posted: the run must end in a successful result; the answer is its structured output, or its text parsed
+as JSON (one Markdown code fence allowed); no other keys; the comment is not empty; every direction note's words
+appear in the takes (spacing and case aside); and every drawing is referenced in the comment. Anything else fails the
+job with what Claude printed kept, and nothing is posted.
+
+**Direction notes** are appended to the `direction_notes` file once the answer is in, one line each:
+
+```
+- [ ] all weapons | "every weapon needs chunkier grips" | WAY-60 | 2026-11-02
+```
+
+**Posting** is the daemon's: `apply_decision` with the answer's comment and the job's drawings. The comment is kept on
+the job the moment it is on the ticket.
+
+### Failures and retries
+
+A failed job stays failed until the reviewer asks for a **retry** (`review.retry`); nothing is retried silently. A
+retry carries on from where the job stopped: an answer already written is not written again, direction notes already
+saved are not appended again, and a comment already posted is not posted again (only the steps after it run).
+
+When the daemon starts, a job it left `queued` or `writing` runs (nothing of it had reached the tracker), and one left
+`posting` fails with a reason: if its comment was kept, a retry finishes without posting it again; if not, the
+comment may or may not have landed, and the error says to check the ticket before retrying.
 
 ## Front doors
 
@@ -129,6 +225,11 @@ queue only.
 | `review.queue`   | `project`           | The queue as of the last refresh, at once |
 | `review.refresh` | `project`           | The queue after reading the tracker again (a `TrackerError` crosses as itself) |
 | `review.item`    | `project`, `ticket` | One item; `KeyError` when the ticket is not in the queue |
+| `review.decide`  | `project`, `request` (a `DecisionRequest`) | The queued jobs, one per ticket, at once; refusals as `ValueError`, `KeyError` or `FileNotFoundError` |
+| `review.jobs`    | `project`           | Every decision job, newest first; a ticket's newest is its state |
+| `review.retry`   | `project`, `job_id` | The job, queued again; `ValueError` unless it failed |
 
-Review events reach a subscribed client as `event` notifications of kind `review`. The manager MCP reads the queue
-with `list_review_queue` and `get_review_item` (see `mcp.md`).
+Queue events reach a subscribed client as `event` notifications of kind `review`, and decision jobs as kind
+`decision_job`. A single decision is `review.decide` with one ticket; a bulk one lists every selected ticket with one
+set of takes. The manager MCP reads the queue with `list_review_queue` and `get_review_item` (see `mcp.md`) and never
+decides a ticket.

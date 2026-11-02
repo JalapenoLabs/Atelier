@@ -13,6 +13,17 @@ an interrupt. Instead of a model, the last paragraph of each prompt is a script,
 - `SLEEP <seconds>`: work that an interrupt stops.
 - `CRASH`: exit at once, mid-turn.
 
+Started without `--input-format stream-json`, it stands in for a decision job's one-shot
+`claude --print --output-format json` instead: it reads the prompt from stdin, finds the ticket on its `Ticket:` line,
+and prints one result envelope. `$FAKE_CLAUDE_ANSWERS` names a JSON file of what to do per ticket:
+
+- `{"answer": {...}}`: answer as structured output (the default answer is a short comment and no direction notes).
+- `{"text": "..."}`: answer as the result's text, with no structured output.
+- `{"error": "..."}`: a failed run (`is_error`), exiting with 1.
+- `{"sleep": <seconds>}`: wait first, alongside any of the above.
+
+Each prompt is appended to `$FAKE_CLAUDE_PROMPTS` as a JSON line (`{"ticket", "prompt", "cwd"}`).
+
 Every argument list it was started with is appended to `$FAKE_CLAUDE_LOG` as a JSON line, so tests can check them.
 Standard library only, so it runs under any Python 3.
 """
@@ -179,11 +190,39 @@ class Turn:
         self.tool_call("Read", {"file_path": path}, run)
 
 
+def answer_once() -> int:
+    """Answer one decision prompt the way `claude --print --output-format json` does."""
+    prompt = sys.stdin.read()
+    ticket_line = next((line for line in prompt.splitlines() if line.startswith("Ticket: ")), "Ticket: ?")
+    ticket = ticket_line.removeprefix("Ticket: ").strip()
+    prompts_path = os.environ.get("FAKE_CLAUDE_PROMPTS")
+    if prompts_path:
+        with open(prompts_path, "a") as prompts:
+            prompts.write(json.dumps({"ticket": ticket, "prompt": prompt, "cwd": os.getcwd()}) + "\n")
+
+    answers_path = os.environ.get("FAKE_CLAUDE_ANSWERS")
+    answers = json.loads(open(answers_path).read()) if answers_path else {}
+    plan = answers.get(ticket, {})
+    time.sleep(plan.get("sleep", 0))
+    envelope: dict[str, Any] = {"type": "result", "subtype": "success", "is_error": False, "total_cost_usd": 0.01}
+    if "error" in plan:
+        emit({**envelope, "subtype": "error_during_execution", "is_error": True, "result": plan["error"]})
+        return 1
+    if "text" in plan:
+        emit({**envelope, "result": plan["text"]})
+        return 0
+    answer = plan.get("answer", {"comment": f"Comment for {ticket}", "direction_notes": []})
+    emit({**envelope, "result": json.dumps(answer), "structured_output": answer})
+    return 0
+
+
 def main() -> int:
     log_path = os.environ.get("FAKE_CLAUDE_LOG")
     if log_path:
         with open(log_path, "a") as log:
             log.write(json.dumps(sys.argv[1:]) + "\n")
+    if "--input-format" not in sys.argv:
+        return answer_once()
     session_id = argument_after("--session-id") or argument_after("--resume") or str(uuid.uuid4())
     messages: queue.Queue[Message] = queue.Queue()
     threading.Thread(target=read_stdin, args=(messages,), daemon=True).start()

@@ -318,6 +318,12 @@ class RpcServer:
         register(protocol.GET_REVIEW_QUEUE, lambda params: core.project(params.project).review.queue())
         register(protocol.REFRESH_REVIEW_QUEUE, lambda params: core.project(params.project).review.refresh())
         register(protocol.GET_REVIEW_ITEM, lambda params: core.project(params.project).review.item(params.ticket))
+        register(protocol.DECIDE, lambda params: core.project(params.project).decisions.submit(params.request))
+        register(protocol.LIST_DECISION_JOBS, lambda params: core.project(params.project).decisions.list_jobs())
+        register(
+            protocol.RETRY_DECISION_JOB,
+            lambda params: core.project(params.project).decisions.retry(params.job_id),
+        )
 
         register(protocol.LIST_APPROVALS, lambda params: core.approvals.list_pending(params.project))
         register(

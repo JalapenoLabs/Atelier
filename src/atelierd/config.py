@@ -15,11 +15,12 @@ import re
 import tomllib
 import urllib.parse
 from enum import StrEnum
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from atelierd.constants import (
+    DEFAULT_DECISION_JOBS,
     DEFAULT_REFERENCE_DROP_FOLDER,
     DEFAULT_REFERENCE_GLOBS,
     DEFAULT_REVIEW_POLL_MINUTES,
@@ -142,6 +143,30 @@ class ReviewConfig(BaseModel):
         default=DEFAULT_TICKET_FILE_GLOBS,
         description="Project-relative globs of the files that name the ticket an asset was built for.",
     )
+    rules: tuple[str, ...] = Field(
+        default=(),
+        description="Project-relative docs holding the project's review rules, which every decision job reads first.",
+    )
+    direction_notes: str | None = Field(
+        default=None,
+        description="The project-relative file each decision's direction notes (feedback for all the art, or a whole "
+        "category) are appended to. Without it they are kept on the decision job only.",
+    )
+    decision_jobs: int = Field(
+        default=DEFAULT_DECISION_JOBS,
+        gt=0,
+        description="How many decision jobs, each one `claude -p`, run at once.",
+    )
+
+    @field_validator("rules", "direction_notes")
+    @classmethod
+    def _paths_stay_in_the_project(cls, paths: tuple[str, ...] | str | None) -> tuple[str, ...] | str | None:
+        # The daemon appends to the direction notes file, so neither it nor a rules doc may point outside the project.
+        for path in (paths,) if isinstance(paths, str) else paths or ():
+            pure_path = PurePosixPath(path)
+            if pure_path.is_absolute() or ".." in pure_path.parts or not pure_path.parts:
+                raise ValueError(f"'{path}' must be a path inside the project, relative to its root")
+        return paths
 
     @field_validator("stages")
     @classmethod

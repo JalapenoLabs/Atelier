@@ -177,3 +177,16 @@ DEFAULT_TICKET_FILE_GLOBS = ("SourceArt/**/reference.json", "SourceArt/**/spec.m
 REVIEW_DOWNLOAD_WORKERS = 4
 # A tracker request still unanswered after this long fails, so a dead connection never stalls the queue.
 TRACKER_TIMEOUT_S = 60
+
+# ========================================================================================
+# Decision jobs
+# ========================================================================================
+
+# Decision jobs running at once per project, unless `[review] decision_jobs` says otherwise. Each is one `claude -p`.
+DEFAULT_DECISION_JOBS = 4
+# A decision job's `claude -p` still running after this long is killed and the job fails.
+DECISION_JOB_TIMEOUT_S = 15 * 60
+# `<state>/review/<ticket>/decisions/<job folder>/` holds the copies of a decision's drawings that the job attaches.
+REVIEW_DECISIONS_DIR_NAME = "decisions"
+# What an approval with no words and no drawings posts, with no `claude -p` run: there is nothing to put in a voice.
+BARE_APPROVAL_COMMENT = "Approved."

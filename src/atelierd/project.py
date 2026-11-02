@@ -2,7 +2,8 @@
 
 State normally lives in `<project>/.atelier/`, which is then added to the project's version-control ignore file.
 The state folder can be put elsewhere (`atelier scan --state-dir`), which leaves the project completely untouched:
-Atelier writes nothing into a project except its own state folder and that one ignore entry.
+Atelier writes nothing into a project except its own state folder and that one ignore entry, beyond what the reviewer
+asks for: a reference dropped into the rail, and the direction notes of a review decision.
 """
 
 from __future__ import annotations

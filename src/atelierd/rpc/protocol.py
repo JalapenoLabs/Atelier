@@ -24,7 +24,7 @@ from atelierd.config import ConfigError
 from atelierd.exports import ConvertedExport
 from atelierd.exports.cache import ExportConversionError
 from atelierd.registry import RegistryError
-from atelierd.review import ReviewEvent, ReviewItem, ReviewQueue
+from atelierd.review import DecisionJob, DecisionJobEvent, DecisionRequest, ReviewEvent, ReviewItem, ReviewQueue
 from atelierd.revisions import RestoreResult, RevisionEvent, SourceBusyError, SourceHistory
 from atelierd.trackers import TrackerError
 from atelierd.workers import (
@@ -158,6 +158,18 @@ class TicketParams(ProjectParams):
     ticket: str
 
 
+class DecideParams(ProjectParams):
+    """A review decision on one ticket, or a bulk decision on many."""
+
+    request: DecisionRequest
+
+
+class DecisionJobParams(ProjectParams):
+    """One of an open project's decision jobs."""
+
+    job_id: int
+
+
 class ApprovalsParams(_Params):
     """Which project's pending approvals; none means every project's."""
 
@@ -236,10 +248,13 @@ PIN_REFERENCES = RpcMethod("workers.pin_references", PinReferencesParams, TypeAd
 CREATE_FEEDBACK = RpcMethod("feedback.create", CreateFeedbackParams, TypeAdapter(Feedback))
 LIST_FEEDBACK = RpcMethod("feedback.list", SourceParams, TypeAdapter(list[Feedback]))
 
-# Reads only: decisions are written by the daemon itself, never by a client.
 GET_REVIEW_QUEUE = RpcMethod("review.queue", ProjectParams, TypeAdapter(ReviewQueue))
 REFRESH_REVIEW_QUEUE = RpcMethod("review.refresh", ProjectParams, TypeAdapter(ReviewQueue))
 GET_REVIEW_ITEM = RpcMethod("review.item", TicketParams, TypeAdapter(ReviewItem))
+# A client submits decisions; the daemon's own jobs write and post them, so no client ever writes to the tracker.
+DECIDE = RpcMethod("review.decide", DecideParams, TypeAdapter(list[DecisionJob]))
+LIST_DECISION_JOBS = RpcMethod("review.jobs", ProjectParams, TypeAdapter(list[DecisionJob]))
+RETRY_DECISION_JOB = RpcMethod("review.retry", DecisionJobParams, TypeAdapter(DecisionJob))
 
 LIST_APPROVALS = RpcMethod("approvals.list", ApprovalsParams, TypeAdapter(list[Approval]))
 ANSWER_APPROVAL = RpcMethod("approvals.answer", AnswerApprovalParams, TypeAdapter(Approval))
@@ -258,14 +273,18 @@ class EventKind(StrEnum):
     WORKER = "worker"
     APPROVAL = "approval"
     REVIEW = "review"
+    DECISION_JOB = "decision_job"
 
 
-EVENT_MODEL_BY_KIND: dict[EventKind, type[CatalogEvent | RevisionEvent | WorkerEvent | ApprovalEvent | ReviewEvent]] = {
+type _EventModel = CatalogEvent | RevisionEvent | WorkerEvent | ApprovalEvent | ReviewEvent | DecisionJobEvent
+
+EVENT_MODEL_BY_KIND: dict[EventKind, type[_EventModel]] = {
     EventKind.CATALOG: CatalogEvent,
     EventKind.REVISION: RevisionEvent,
     EventKind.WORKER: WorkerEvent,
     EventKind.APPROVAL: ApprovalEvent,
     EventKind.REVIEW: ReviewEvent,
+    EventKind.DECISION_JOB: DecisionJobEvent,
 }
 EVENT_KIND_BY_MODEL = {model: kind for kind, model in EVENT_MODEL_BY_KIND.items()}
 if set(EVENT_MODEL_BY_KIND) != set(EventKind):

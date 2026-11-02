@@ -58,8 +58,8 @@ The RPC (`atelierd.rpc`) is one JSON object per line. `protocol.py` declares eve
 model and result type, and both the server and the client read it. Errors the core raises on purpose (`KeyError` for
 an unknown source, `SourceBusyError`, `WorkerBusyError`, `TrackerError`) cross as themselves, so the window handles a daemon failure
 the way it would the core's. After `events.subscribe` (to one project or all), a client receives `event`
-notifications carrying the open projects' catalog changes, new revisions, worker output, approvals and review queue
-changes. Every call
+notifications carrying the open projects' catalog changes, new revisions, worker output, approvals, review queue
+changes and decision jobs. Every call
 runs in a thread off the daemon's event loop, and core events, which arrive on the core's threads, are hopped onto
 the loop before they are written. The HTTP front door (`atelierd.mcp.app`) is one Starlette app served by uvicorn on
 the same loop; the manager MCP is served there beside the worker server.
@@ -72,14 +72,14 @@ guarantee.
 | Where                                   | What                                                         |
 |-----------------------------------------|--------------------------------------------------------------|
 | `<project>/atelier.toml`                | Project config, versioned with the project (see `catalog.md`) |
-| `<project>/.atelier/state.db`           | SQLite (WAL): sources, statuses, camera bookmarks, revisions, feedback, sessions |
+| `<project>/.atelier/state.db`           | SQLite (WAL): sources, statuses, camera bookmarks, revisions, feedback, sessions, decision jobs |
 | `<project>/.atelier/objects/`           | Content-addressed snapshot bytes (see `revisions.md`)        |
 | `<project>/.atelier/renders/`           | Standard renders per revision (see `revisions.md`)           |
 | `<project>/.atelier/feedback/`          | Markup captures and annotated images (see `workers.md`)      |
 | `<project>/.atelier/transcripts/`       | Worker chats, one JSON-lines file per session, with tool images |
 | `<project>/.atelier/workers/`           | Each worker's policy, MCP config and hook settings           |
 | `<project>/.atelier/cache/`             | Exports converted to `.glb` with their stats, named by the FBX's sha256 (see `viewer.md`) |
-| `<project>/.atelier/review/`            | Per ticket in the review queue, its latest delivery's downloaded files (see `review.md`) |
+| `<project>/.atelier/review/`            | Per ticket in the review queue, its latest delivery's downloaded files and its decisions' drawings (see `review.md`) |
 | `~/.local/share/atelier/projects.toml`  | The machine's registry of known projects                     |
 
 Per-project state travels with the project's drive and never mixes facts from two projects, so every path stored in
@@ -113,7 +113,7 @@ One `uv` project, two import packages under `src/`:
 
 | Package    | Holds                                                                                          |
 |------------|------------------------------------------------------------------------------------------------|
-| `atelierd` | The core: `config` (`atelier.toml`), `registry`, `project` (paths, state folder, ignore entry), `catalog` (discovery, references, `state.db` store, the `Catalog` service, the watcher), `blender` (running a script in headless Blender), `exports` (converting exports to `.glb` and measuring them, cached), `revisions` (the object store, revision manifests, standard renders, restore and prune, and the `RevisionTracker` that records and renders in the background), `workers` (the worker, its processes, the scope policy and its hook, approvals, transcripts, feedback and their `state.db` tables), `trackers` (the ticket tracker contract, credentials borrowed from Claude Code, one module per tracker and the lookup by kind), `review` (the review queue: refreshing, downloads, links to sources, decisions). The daemon: `daemon` (the core every front door calls, running it, the command line, the systemd unit), `rpc` (the GUI's front door: protocol, server, client) and `mcp` (the HTTP front door, the worker-side MCP server, and the manager MCP with its image scaling). |
+| `atelierd` | The core: `config` (`atelier.toml`), `registry`, `project` (paths, state folder, ignore entry), `catalog` (discovery, references, `state.db` store, the `Catalog` service, the watcher), `blender` (running a script in headless Blender), `exports` (converting exports to `.glb` and measuring them, cached), `revisions` (the object store, revision manifests, standard renders, restore and prune, and the `RevisionTracker` that records and renders in the background), `workers` (the worker, its processes, the scope policy and its hook, approvals, transcripts, feedback and their `state.db` tables), `trackers` (the ticket tracker contract, credentials borrowed from Claude Code, one module per tracker and the lookup by kind), `review` (the review queue: refreshing, downloads, links to sources, decisions, and the decision jobs that write each comment with `claude -p`, with their prompt template and `state.db` table). The daemon: `daemon` (the core every front door calls, running it, the command line, the systemd unit), `rpc` (the GUI's front door: protocol, server, client) and `mcp` (the HTTP front door, the worker-side MCP server, and the manager MCP with its image scaling). |
 | `atelier`  | Front ends: the `atelier` command line (`atelier.cli`: `scan`, `prune`), and the desktop app (`atelier.gui`: the backend interface and its RPC implementation, the `Studio` view-model with the chat and markup editor, the theme file and its watcher, and the QML in `gui/qml/`). |
 
 `atelier` imports `atelierd`; `atelierd` never imports `atelier`. The core neither prints nor parses arguments: its
