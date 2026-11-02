@@ -1,5 +1,6 @@
-// The review window: a header with the project picker over three panes (sources, stage, context).
-// Panel sizes, the context tab and the viewport's display settings are remembered per machine.
+// The review window: a header with the project picker and the mode, over the Studio's three panes (sources, stage,
+// context) or the Review mode's grid of the review queue. Panel sizes, the context tab, the mode and the viewport's
+// display settings are remembered per machine.
 import QtCore
 import QtQuick
 import QtQuick.Controls
@@ -45,7 +46,15 @@ ApplicationWindow {
         }
     }
 
+    // "studio" or "review".
+    property string mode: windowSettings.mode
+
     header: HeaderBar {
+        mode: root.mode
+        onModeRequested: newMode => {
+            root.mode = newMode
+            windowSettings.mode = newMode
+        }
     }
 
     Settings {
@@ -55,6 +64,7 @@ ApplicationWindow {
         property var stageSplitState
         property int contextTab: 0
         property string lastProject: ""
+        property string mode: "studio"
     }
 
     Component.onCompleted: {
@@ -76,27 +86,34 @@ ApplicationWindow {
         }
     }
 
-    SplitView {
-        id: mainSplit
+    StackLayout {
         anchors.fill: parent
-        orientation: Qt.Horizontal
+        currentIndex: root.mode === "review" ? 1 : 0
 
-        SourcePane {
-            SplitView.preferredWidth: 280
-            SplitView.minimumWidth: 200
+        SplitView {
+            id: mainSplit
+            orientation: Qt.Horizontal
+
+            SourcePane {
+                SplitView.preferredWidth: 280
+                SplitView.minimumWidth: 200
+            }
+
+            Stage {
+                id: stage
+                SplitView.fillWidth: true
+                SplitView.minimumWidth: 400
+            }
+
+            ContextPane {
+                SplitView.preferredWidth: 360
+                SplitView.minimumWidth: 260
+                currentTab: windowSettings.contextTab
+                onCurrentTabChanged: windowSettings.contextTab = currentTab
+            }
         }
 
-        Stage {
-            id: stage
-            SplitView.fillWidth: true
-            SplitView.minimumWidth: 400
-        }
-
-        ContextPane {
-            SplitView.preferredWidth: 360
-            SplitView.minimumWidth: 260
-            currentTab: windowSettings.contextTab
-            onCurrentTabChanged: windowSettings.contextTab = currentTab
+        ReviewPage {
         }
     }
 

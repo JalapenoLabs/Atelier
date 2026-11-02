@@ -46,18 +46,18 @@ The built-in values are the dark theme the window ships with.
 | `panelRaised`            | `#272b35` | Raised surfaces: buttons, cards, tiles                                      |
 | `field`                  | `#15171c` | Input fields; at 80% opacity, the overlays on the viewport                  |
 | `text`                   | `#e4e7ee` | Text                                                                        |
-| `textDim`                | `#9aa1b2` | Secondary text, hints, disabled controls                                    |
+| `textDim`                | `#9aa1b2` | Secondary text, hints, disabled controls, a queued decision job             |
 | `selectionText`          | `#ffffff` | Text on the selection colour                                                |
-| `accent`                 | `#6aa8ff` | Focus, the shown render, links, a running worker                            |
+| `accent`                 | `#6aa8ff` | Focus, the shown render, links, a running worker, a decision job writing or posting |
 | `border`                 | `#30353f` | Borders and separators                                                      |
-| `selection`              | `#2d4a73` | Selected rows and tiles; at 20% opacity, the drop target on the references  |
+| `selection`              | `#2d4a73` | Selected rows and tiles; at 20% opacity, the drop target on the references; at 35%, the review grid's selection box |
 | `statusDraft`            | `#8a909c` | A source in draft                                                           |
 | `statusInReview`         | `#e0b341` | A source in review                                                          |
 | `statusChangesRequested` | `#e0645a` | A source with changes requested                                             |
 | `statusApproved`         | `#5cc285` | An approved source                                                          |
-| `danger`                 | `#e0645a` | Failures: a failed conversion, turn or tool call, a denied approval         |
+| `danger`                 | `#e0645a` | Failures: a failed conversion, turn, tool call or decision job, a denied approval |
 | `warning`                | `#e0b341` | Waiting on you: approvals, a worker starting                                |
-| `success`                | `#5cc285` | Done: an allowed approval, a finished tool call, an idle worker             |
+| `success`                | `#5cc285` | Done: an allowed approval, a finished tool call, an idle worker, a posted decision |
 | `viewportBackground`     | `#2a2e36` | The 3D viewport's backdrop, and behind renders, compare and markup          |
 | `viewportGrid`           | `#808080` | The ground grid: every tenth line at full strength, the rest at half        |
 | `viewportAxisX`          | `#ff0000` | Unreal's X axis on the grid                                                 |

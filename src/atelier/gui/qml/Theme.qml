@@ -29,10 +29,14 @@ QtObject {
     readonly property color viewportAxisX: ThemeFile.colors.viewportAxisX
     readonly property color viewportAxisY: ThemeFile.colors.viewportAxisY
 
-    // Derived shades: overlays on the viewport, the drop target over the references, an approval waiting for you.
+    // Derived shades: overlays on the viewport, the drop target over the references, an approval waiting for you, the
+    // review grid's selection box, a failure's banner, and the window dimmed behind a modal popup.
     readonly property color overlay: Qt.alpha(field, 0.8)
     readonly property color dropHighlight: Qt.alpha(selection, 0.2)
     readonly property color pendingSurface: Qt.tint(window, Qt.alpha(warning, 0.14))
+    readonly property color selectionBox: Qt.alpha(selection, 0.35)
+    readonly property color dangerSurface: Qt.tint(window, Qt.alpha(danger, 0.18))
+    readonly property color modalDim: Qt.alpha(shadow, 0.5)
     readonly property color shadow: Qt.darker(window, 3)
 
     // The scene's own colours, deliberately not themed.
@@ -58,6 +62,19 @@ QtObject {
         "changes-requested": "Changes requested",
         "approved": "Approved"
     })
+
+    // A review ticket's decision job, as its tile's badge shows it.
+    readonly property var jobStateColors: ({
+        "queued": ThemeFile.colors.textDim,
+        "writing": ThemeFile.colors.accent,
+        "posting": ThemeFile.colors.accent,
+        "posted": ThemeFile.colors.success,
+        "failed": ThemeFile.colors.danger
+    })
+
+    function jobStateColor(state) {
+        return jobStateColors[state] || textDim
+    }
 
     function statusColor(status) {
         return statusColors[status] || textDim

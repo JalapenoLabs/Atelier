@@ -15,7 +15,8 @@ its exports converted from the object store, its renders read from it, and its s
 Compare puts two revisions side by side, as standard renders or as two models.
 
 Workers follow `docs/workers.md`: `chat` is the selected source's worker and chat, `markup` the drawing layer that
-sends feedback, and the approvals list holds every project's escalated tool calls for the header's badge. The window
+sends feedback, and the approvals list holds every project's escalated tool calls for the header's badge. `review` is
+the Review mode's grid over the project's review queue (`gui/review.py`, `docs/review.md`). The window
 reaches the core only through the daemon; until it is connected (or when it goes away) `daemonState` says so and the
 window offers to start one.
 """
@@ -36,6 +37,7 @@ from atelier.gui.chat import Chat
 from atelier.gui.gallery import group_renders_by_stem
 from atelier.gui.list_model import RowListModel
 from atelier.gui.markup import MarkupEditor, MarkupTarget
+from atelier.gui.review import ReviewBoard
 from atelier.gui.revisions import (
     RENDER_STATE_LABELS,
     TRIGGER_LABELS,
@@ -47,8 +49,9 @@ from atelier.gui.revisions import (
 )
 from atelier.gui.tasks import TaskRunner
 from atelier.gui.tree import RowKind, SourceRow, TreeExpansion, build_source_rows
-from atelierd.catalog import CameraBookmark, CatalogEvent, Reference, ScanResult, Source, SourceStatus
+from atelierd.catalog import CameraBookmark, Reference, ScanResult, Source, SourceStatus
 from atelierd.exports import ConvertedExport
+from atelierd.review import DecisionJobEvent, ReviewEvent
 from atelierd.revisions import (
     STANDARD_VIEWS,
     FileKind,
@@ -348,6 +351,7 @@ class Studio(QObject):
         self.markup = MarkupEditor(backend, self._run_catalog, self._show_message, self._markup_target)
         # The markup editor takes the stage while it is open.
         self.markup.changed.connect(self.stageReadyChanged)
+        self.review = ReviewBoard(backend, tasks, self._run_catalog, self._show_message)
 
         self._coreEventArrived.connect(self._on_core_event)
 
@@ -484,6 +488,9 @@ class Studio(QObject):
     def _get_markup(self) -> QObject:
         return self.markup
 
+    def _get_review(self) -> QObject:
+        return self.review
+
     def _get_approval_rows(self) -> QObject:
         return self._approval_rows
 
@@ -554,6 +561,7 @@ class Studio(QObject):
     message = Property(str, _get_message, notify=messageChanged)
     chatModel = Property(QObject, _get_chat, constant=True)
     markupEditor = Property(QObject, _get_markup, constant=True)
+    reviewBoard = Property(QObject, _get_review, constant=True)
     approvalRows = Property(QObject, _get_approval_rows, constant=True)
     approvalCount = Property(int, _get_approval_count, notify=approvalsChanged)
     daemonState = Property(str, _get_daemon_state, notify=daemonChanged)
@@ -670,6 +678,7 @@ class Studio(QObject):
         self._rebuild_tree()
         self._set_references(list(result.references))
         self._refresh_approval_rows()
+        self.review.open_project()
         self.projectChanged.emit()
         self._show_message(f"{self._project_name}: {len(result.sources)} sources")
         # Opening by path registers a project the picker may not list yet.
@@ -679,7 +688,8 @@ class Studio(QObject):
     def _on_core_event(self, event: StudioEvent) -> None:
         """Follow the core: a revision or its renders refresh the history, and a settled change refreshes the lists.
 
-        A change to the selected source's files reloads it. Worker events go to the chat, approvals to the badge.
+        A change to the selected source's files reloads it. Worker events go to the chat, approvals to the badge, and
+        the review queue's changes and decision jobs to the review grid.
         """
         if isinstance(event, DaemonDisconnected):
             self._set_daemon_state(DaemonState.MISSING, "Lost the connection to atelierd")
@@ -694,9 +704,11 @@ class Studio(QObject):
             if event.source == self._selected_source:
                 self._refresh_history()
             return
-        if not isinstance(event, CatalogEvent):
-            # The window has no view of the review queue or its decision jobs, so their events have nothing to update.
-            logger.debug(f"[Studio] No view follows {type(event).__name__}")
+        if isinstance(event, ReviewEvent):
+            self.review.apply_review_event(event)
+            return
+        if isinstance(event, DecisionJobEvent):
+            self.review.apply_job_event(event)
             return
 
         is_selection_touched = self._selected_source in (*event.touched, *event.change.changed)

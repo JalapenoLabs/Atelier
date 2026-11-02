@@ -22,6 +22,7 @@ from atelierd.catalog import CameraBookmark, Reference, ScanResult, Source, Sour
 from atelierd.daemon.core import CoreEvent
 from atelierd.daemon.system import start_in_background
 from atelierd.exports import ConvertedExport
+from atelierd.review import DecisionJob, DecisionRequest, ReviewQueue
 from atelierd.revisions import RestoreResult, SourceHistory
 from atelierd.revisions.objects import ObjectStore
 from atelierd.rpc import protocol
@@ -40,8 +41,8 @@ class DaemonDisconnected(BaseModel):
     socket_path: Path
 
 
-# Everything the window hears as it happens: the open project's changes, revisions and worker output, every
-# project's approvals, and losing the daemon.
+# Everything the window hears as it happens: the open project's changes, revisions, worker output, review queue and
+# decision jobs, every project's approvals, and losing the daemon.
 type StudioEvent = CoreEvent | DaemonDisconnected
 
 
@@ -87,6 +88,11 @@ class StudioBackend(Protocol):
 
     def resolve(self, project_path: str) -> Path:
         """Return the absolute path of a project-relative path in the open project."""
+        ...
+
+    @property
+    def state_dir(self) -> Path:
+        """The open project's state folder, where the window keeps its own caches (review thumbnails)."""
         ...
 
     def rescan(self) -> ScanResult:
@@ -189,6 +195,30 @@ class StudioBackend(Protocol):
         """Allow or deny an escalated tool call."""
         ...
 
+    # ####################### #
+    #         REVIEW          #
+    # ####################### #
+
+    def get_review_queue(self) -> ReviewQueue:
+        """Return the open project's review queue as of its last refresh, at once."""
+        ...
+
+    def refresh_review_queue(self) -> ReviewQueue:
+        """Read the open project's review queue from its tracker again, and return it."""
+        ...
+
+    def decide(self, request: DecisionRequest) -> list[DecisionJob]:
+        """Queue a decision on one ticket, or a bulk decision on many; returns the queued jobs, one per ticket."""
+        ...
+
+    def list_decision_jobs(self) -> list[DecisionJob]:
+        """Return every decision job of the open project, newest first."""
+        ...
+
+    def retry_decision_job(self, job_id: int) -> DecisionJob:
+        """Queue a failed decision job again."""
+        ...
+
 
 class RpcBackend:
     """A `StudioBackend` over the daemon's JSON-RPC socket."""
@@ -265,6 +295,11 @@ class RpcBackend:
     def resolve(self, project_path: str) -> Path:
         """Return the absolute path of a project-relative path in the open project."""
         return self._open().root / project_path
+
+    @property
+    def state_dir(self) -> Path:
+        """The open project's state folder, where the window keeps its own caches (review thumbnails)."""
+        return self._open().state_dir
 
     def rescan(self) -> ScanResult:
         """Scan the open project again now, rather than when the watcher next notices a change."""
@@ -386,6 +421,31 @@ class RpcBackend:
         """Allow or deny an escalated tool call."""
         params = protocol.AnswerApprovalParams(approval_id=approval_id, is_allowed=is_allowed, message=message)
         return self._call(protocol.ANSWER_APPROVAL, params)
+
+    # ####################### #
+    #         REVIEW          #
+    # ####################### #
+
+    def get_review_queue(self) -> ReviewQueue:
+        """Return the open project's review queue as of its last refresh, at once."""
+        return self._call(protocol.GET_REVIEW_QUEUE, self._project_params())
+
+    def refresh_review_queue(self) -> ReviewQueue:
+        """Read the open project's review queue from its tracker again, and return it."""
+        return self._call(protocol.REFRESH_REVIEW_QUEUE, self._project_params())
+
+    def decide(self, request: DecisionRequest) -> list[DecisionJob]:
+        """Queue a decision on one ticket, or a bulk decision on many; returns the queued jobs, one per ticket."""
+        return self._call(protocol.DECIDE, protocol.DecideParams(project=self._open().name, request=request))
+
+    def list_decision_jobs(self) -> list[DecisionJob]:
+        """Return every decision job of the open project, newest first."""
+        return self._call(protocol.LIST_DECISION_JOBS, self._project_params())
+
+    def retry_decision_job(self, job_id: int) -> DecisionJob:
+        """Queue a failed decision job again."""
+        params = protocol.DecisionJobParams(project=self._open().name, job_id=job_id)
+        return self._call(protocol.RETRY_DECISION_JOB, params)
 
     # -----------------------------------------------------------------------------
     # Internals

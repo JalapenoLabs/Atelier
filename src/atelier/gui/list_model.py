@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable, Mapping
 from typing import Any
 
 from pydantic import BaseModel
@@ -46,6 +47,45 @@ class RowListModel(QAbstractListModel):
         self._rows[position] = row
         model_index = self.index(position, 0)
         self.dataChanged.emit(model_index, model_index)
+
+    def update_rows(self, changed: Mapping[int, BaseModel]) -> None:
+        """Replace several rows in place with one change signal over their span, rather than one per row."""
+        if not changed:
+            return
+        for position, row in changed.items():
+            self._rows[position] = row
+        self.dataChanged.emit(self.index(min(changed), 0), self.index(max(changed), 0))
+
+    def sync_rows(self, rows: list[Any], key: Callable[[Any], str]) -> None:
+        """Turn the rows into `rows` by removing, inserting and replacing rows, so views keep their scroll and items.
+
+        Rows are matched by `key`. A change that reorders rows still present resets the views instead, as
+        `set_rows` does.
+        """
+        wanted_keys = {key(row) for row in rows}
+        for position in reversed(range(len(self._rows))):
+            if key(self._rows[position]) not in wanted_keys:
+                self.beginRemoveRows(QModelIndex(), position, position)
+                del self._rows[position]
+                self.endRemoveRows()
+
+        present_keys = {key(row) for row in self._rows}
+        changed: dict[int, BaseModel] = {}
+        for position, row in enumerate(rows):
+            is_same_row = position < len(self._rows) and key(self._rows[position]) == key(row)
+            if is_same_row:
+                if self._rows[position] != row:
+                    changed[position] = row
+                continue
+            if key(row) in present_keys:
+                logger.debug("[RowListModel] Rows moved; resetting the views")
+                self.set_rows(rows)
+                return
+            self.beginInsertRows(QModelIndex(), position, position)
+            self._rows.insert(position, row)
+            self.endInsertRows()
+        self.update_rows(changed)
+        self.countChanged.emit()
 
     def rowCount(self, parent: QModelIndex | QPersistentModelIndex = QModelIndex()) -> int:  # noqa: B008
         """Return the number of rows; a list has no children."""

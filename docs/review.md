@@ -220,6 +220,16 @@ When the daemon starts, a job it left `queued` or `writing` runs (nothing of it 
 `posting` fails with a reason: if its comment was kept, a retry finishes without posting it again; if not, the
 comment may or may not have landed, and the error says to check the ticket before retrying.
 
+## In the window
+
+The window's **Review** mode (see `viewer.md`) is the reviewer's side of all this: a grid of the queue, one tile per
+ticket with its latest delivery's hero image and its decision job's state, a tab per queue, and multi-select with
+the keyboard and mouse. Approving or requesting changes on the selection is one `review.decide` with every selected
+ticket and one set of takes; tickets with a decision already on its way are left out of it rather than failing it.
+The grid reads `review.queue` again on every queue event and follows `decision_job` events to badge its tiles, and a
+ticket leaves it on the `decided` event, when its decision has posted. Opening a tile goes to focus mode on that
+ticket. The window never writes to the tracker itself.
+
 ## Front doors
 
 | RPC method       | Params              | Result         |

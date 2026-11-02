@@ -7,9 +7,11 @@ from pathlib import Path
 
 import pytest
 from conftest import RunningDaemon
+from fake_tracker import REVIEW_CONFIG, FakeTracker, add_review_scenario
 from PySide6.QtCore import QSettings, QUrl
 from PySide6.QtGui import QColor, QGuiApplication, QImage
 from PySide6.QtQml import QQmlApplicationEngine, QQmlError
+from PySide6.QtQuick import QQuickWindow
 
 from atelier import cli
 from atelier.gui.app import _MAIN_QML, GuiOptions
@@ -26,9 +28,14 @@ def test_every_qml_file_loads_without_errors(
     project_root: Path,
     tmp_path: Path,
     daemon: RunningDaemon,
+    fake_tracker: FakeTracker,
     wait_until: Callable[[Callable[[], bool]], None],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # A review queue from the fake tracker, so the Review mode draws tiles too.
+    config_path = project_root / "atelier.toml"
+    config_path.write_text(config_path.read_text(encoding="utf-8") + REVIEW_CONFIG, encoding="utf-8")
+    add_review_scenario(fake_tracker)
     # The window's Settings write here, never into the user's own configuration.
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     qt_application.setOrganizationName("AtelierTests")
@@ -64,6 +71,16 @@ def test_every_qml_file_loads_without_errors(
         studio.markup.openImage(QUrl.fromLocalFile(str(render)).toString(), "render.png")
         studio.markup.addStroke("box", [[0.1, 0.1], [0.6, 0.6]])
         studio.markup.addPin(0.5, 0.5)
+        qt_application.processEvents()
+        # The Review mode: its grid over the queue, a decision's note, and focus mode on a ticket.
+        window = engine.rootObjects()[0]
+        assert isinstance(window, QQuickWindow)
+        window.setProperty("mode", "review")
+        wait_until(lambda: studio.review.property("ticketCount") == 3)
+        studio.review.note.addTake("Warmer metal")
+        studio.review.openTicket(0)
+        qt_application.processEvents()
+        studio.review.closeFocus()
         qt_application.processEvents()
     finally:
         studio.close()

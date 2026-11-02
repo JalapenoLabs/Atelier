@@ -15,7 +15,8 @@ Until the daemon answers, the window shows a page saying so, with **Start atelie
 
 ## Window
 
-A three-pane studio:
+Two modes, switched in the header: the **Studio**, a three-pane view of the catalog, and **Review**, a grid of the
+project's review queue (see "Review mode" below). The Studio:
 
 ```
 ┌ Atelier  AnchorFall ▾  status message ────────────────────────────────────── [2 approvals] ┐
@@ -28,8 +29,8 @@ A three-pane studio:
 └──────────────┴──────────────────────────────────────────────────────┴────────────────────────┘
 ```
 
-- **Header**: the project picker (every project in the machine's registry), the latest status message, and the
-  approvals badge: every project's worker tool calls waiting for you, listed as approval cards in its popup
+- **Header**: the project picker (every project in the machine's registry), the mode (Studio, or Review with the number
+  of tickets waiting), the latest status message, and the approvals badge: every project's worker tool calls waiting for you, listed as approval cards in its popup
   (see `workers.md`).
 - **Sources** (left): the catalog as a file tree: folders, then sources, then each source's exports as its
   children. A top folder every source shares (`SourceArt/`) is left out, and a folder holding only a source of its
@@ -47,7 +48,8 @@ A three-pane studio:
 - **Context** (right): tabs for the source's worker chat (see `workers.md`), the references rail, and its README
   rendered as Markdown.
 
-Panel sizes, the selected tab, the last project, the viewport's display settings and each project's open tree rows
+Panel sizes, the selected tab, the last project, the mode, the viewport's display settings and each project's open tree
+rows
 (`sourceTree/<project>/`) are remembered per machine, in Qt's settings (`~/.config/JalapenoLabs/Atelier.conf`).
 Everything else the window shows comes from the core, apart from its colours, which come from a theme file and
 follow it live (see `theming.md`).
@@ -184,25 +186,101 @@ onto it copies them into `references.drop_folder` and rescans, so they appear at
 there is never overwritten: the same image is not copied again, and a different one gets the next free name
 (`concept-2.png`). With a source selected, **Pin** on an image pins it to that source's next worker prompt.
 
+## Review mode
+
+The project's review queue (see `review.md`) as a grid, one tile per ticket, with a tab per configured queue (Art, UI,
+Audio) showing how many tickets it holds. It is built for working through a hundred tickets without the mouse.
+
+```
+┌ Atelier  Waystead ▾  Studio [Review 24]  status message ──────────────────────────── [0 approvals] ┐
+│ [Art 24]  UI 0  Audio 1                       5 selected  [Approve] [Request changes] [Refresh] │
+│ ┌────────────────┐ ┌────────────────┐ ┌────────────────┐ ┌────────────────┐                     │
+│ │ Approve·Queued │ │                │ │ Changes·Failed │ │                │                     │
+│ │   hero image   │ │   hero image   │ │   hero image   │ │ 1 file, no     │                     │
+│ │                │ │                │ │                │ │ image          │                     │
+│ │ WAY-100 Carbine│ │ WAY-101 Pistol │ │ WAY-102 Wall   │ │ WAY-103 Door   │                     │
+│ │ [Art asset]    │ │ [Art asset]    │ │ [Art asset]    │ │ [Audio]        │                     │
+│ └────────────────┘ └────────────────┘ └────────────────┘ └────────────────┘                     │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+- **A tile** shows the ticket's hero image, its id, summary and tags, and its decision job's state as a badge
+  (queued, writing, posting, posted or failed, with the verdict: "Approve · Writing"). A failed badge says why on
+  hover and offers **Retry** (`review.retry`). A job decided on an earlier delivery than the ticket's current one
+  shows no badge.
+- **The hero image** is the first image of the latest delivery (by its type, or by its name when the tracker gave no
+  type). A ticket with no image in its delivery shows the newest standard `hero` render of the source it links to, if
+  that has been rendered; the grid never starts a render. Otherwise the tile says what it has ("1 file, no image",
+  "No delivery yet").
+- **Thumbnails**: each hero is decoded once, straight to at most 480 pixels on its longest side (Qt's
+  `QImageReader.setScaledSize`), and kept as a PNG in `<state>/cache/thumbnails/`, named by the image's path, size and
+  modification time, so an unchanged image is never decoded again and a changed one gets a new thumbnail. Finding and
+  making them runs on a pool of four threads of its own, so a queue of a hundred or more tickets fills in as they
+  arrive without holding up the window, and the grid loads its images asynchronously. An image that cannot be decoded
+  (deliveries are untrusted files) leaves its tile with a note instead.
+- **Following the queue**: the grid reads the queue when the project opens and again on every queue event, and badges
+  tiles as decision job events arrive. A ticket leaves the grid when its decision posts (the daemon's `decided`
+  event). Tiles are removed, added and updated in place, never rebuilt, so the grid keeps its scroll, its selection
+  and the cursor's place. A refresh that fails keeps the tiles and says why above them. **Refresh** (F5) reads the
+  tracker again now. A project with no `[review]` table says so.
+
+### Selecting and deciding
+
+| Input                           | Does                                                                          |
+|---------------------------------|-------------------------------------------------------------------------------|
+| Arrows, Home, End               | Move the cursor (the outlined tile); the grid starts with it on the first tile |
+| Shift+arrows                    | Select from the last tile picked to the cursor                                 |
+| Space                           | Select or unselect the tile under the cursor                                   |
+| Ctrl+A                          | Select every tile of the tab                                                   |
+| Esc                             | Select nothing                                                                 |
+| Click, Ctrl+click               | Select one tile; toggle one                                                    |
+| Shift+click, Ctrl+Shift+click   | Select the range from the last tile clicked; add it to the selection           |
+| Drag on the grid                | A selection box: what it covers is selected (with Ctrl, added), scrolled-off tiles included |
+| A, **Approve**                  | Approve, with an optional short note                                           |
+| C, **Request changes**          | Request changes, with one note for every ticket                                |
+| Enter, double click             | Open the ticket in focus mode                                                  |
+| F5, **Refresh**                 | Read the queue from the tracker again                                          |
+
+A decision covers the selection, or the tile under the cursor when nothing is selected. A or C opens its **note**: the
+reviewer's takes, verbatim and in order, above a field for typing, whose text is the last take. Enter sends it
+(Shift+Enter starts a new line); Esc puts it away and keeps it for next time. An approval with no note posts
+"Approved."; a request for changes needs words. Several tickets share one note, which makes it a bulk decision: one
+`review.decide` call, and each ticket's comment is written for it by its own job. Tickets that already have a decision
+on its way are left out, and the status message says how many. The decided tickets show their queued badge at once
+and leave the selection. Switching tabs starts a fresh selection.
+
+The note is `atelier.gui.review.DecisionNote`: `addTake(text)` adds a take exactly as given, and `removeLastTake()`
+drops the newest. Voice notes add each transcribed recording through `addTake`, so typed and spoken words end up in
+the same ordered takes.
+
+### Focus mode
+
+Opening a tile sets the board's `focusedTicket` and emits `ReviewBoard.focusRequested(ticket)`, and the page shows
+`ReviewFocusPage.qml` in place of the grid, bound to `focusedTile`. Today that page shows the ticket's id, summary and
+hero image full size; Esc or **Back to the grid** returns (`closeFocus()`), with the cursor on the ticket opened. Focus
+mode's stage, markup and notes are on the roadmap for this page.
+
 ## Between the window and the core
 
 The window reaches the core through exactly one interface, `atelier.gui.backend.StudioBackend`: reach the daemon and
 follow its events (the open project's catalog changes, revisions and worker output, every project's approvals, and
-losing the daemon, on one stream; the open project's review queue and decision job events arrive too, and the window
-has no view of either to update), open a project, list sources and references, set a status, keep bookmarks, add a
+losing the daemon, on one stream, with the open project's review queue and decision jobs), open a project, list sources and references, set a status, keep bookmarks, add a
 reference, convert an export, read a source's revision history, ask for standard renders, convert a revision's
-export, restore, drive a source's worker, pin references, store feedback and answer approvals. It speaks only in core
+export, restore, drive a source's worker, pin references, store feedback, answer approvals, and read the review
+queue, refresh it, submit decisions, list decision jobs and retry one. It speaks only in core
 models and project-relative paths, plus absolute paths into the state folder (converted models, standard renders,
-objects, transcript and feedback images). `RpcBackend` implements it over the daemon's socket (see
+objects, transcript and feedback images, review deliveries), and it names the open project's state folder, where
+the window keeps its review thumbnails. `RpcBackend` implements it over the daemon's socket (see
 `architecture.md`). Images and models are read straight from disk by path, never sent over the socket.
 
 Above it, `atelier.gui.studio.Studio` is the view-model QML binds to (the daemon's state, the selection, the filter,
 the tree's open rows and the row the keyboard is on, the load path, the staged revision and compare, the approvals
-list), with `gui/chat.py` (the selected source's worker
-and chat) and `gui/markup.py` (the markup editor, and flattening markup onto its image) beside it, and plain
-functions build the tree (`gui/tree.py`), the gallery groups (`gui/gallery.py`) and the filmstrip rows
+list), with `gui/chat.py` (the selected source's worker and chat), `gui/markup.py` (the markup editor, and flattening
+markup onto its image) and `gui/review.py` (the Review mode's `ReviewBoard` and its `DecisionNote`) beside it, and
+plain functions build the tree (`gui/tree.py`), the gallery groups (`gui/gallery.py`) and the filmstrip rows
 (`gui/revisions.py`). Backend calls run off the UI thread through `gui/tasks.py`: catalog work in order on one
-thread, conversions on their own. Show in Blender is the window's own (`gui/desktop.py`), and so is the theme (`gui/theme.py`).
+thread, conversions and review thumbnails (`gui/thumbnails.py`) on pools of their own. Show in Blender is the
+window's own (`gui/desktop.py`), and so is the theme (`gui/theme.py`).
 
 ## Development
 
@@ -222,5 +300,7 @@ hyprctl eval "hl.exec_cmd('<command>', { workspace = 'special:atelier silent', f
 ```
 
 The tests run on `offscreen` without a display: the view-model against a fake backend, the tree and gallery
-functions, the camera's math and the mouse and keys driving it (`tests/test_gui_camera.py`), and a check that every
-QML file loads without a warning against a real daemon run in the test process.
+functions, the camera's math and the mouse and keys driving it (`tests/test_gui_camera.py`), the review grid's tiles,
+thumbnails, selection and decisions, with its page driven by real keys and mouse events (`tests/test_gui_review.py`;
+on `offscreen` a shown window renders 2D frames, though nothing appears on screen), and a check that every QML file
+loads without a warning against a real daemon run in the test process.

@@ -1,12 +1,18 @@
-// The window's title bar row: the app name, the project picker, the latest status message, and the approvals badge:
-// every worker tool call, in any project, waiting for you, listed as cards in its popup.
+// The window's title bar row: the app name, the project picker, the mode (Studio, or Review with the number of tickets
+// waiting), the latest status message, and the approvals badge: every worker tool call, in any project, waiting for
+// you, listed as cards in its popup.
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
 Rectangle {
+    id: headerBar
     implicitHeight: 44
     color: Theme.panel
+
+    // "studio" or "review"; the window owns it and remembers it.
+    property string mode: "studio"
+    signal modeRequested(string newMode)
 
     Rectangle {
         anchors.bottom: parent.bottom
@@ -41,6 +47,24 @@ Rectangle {
                 function onProjectChanged() {
                     projectPicker.currentIndex = studio.projects.indexOf(studio.projectName)
                 }
+            }
+        }
+
+        Repeater {
+            model: [
+                {"mode": "studio", "label": "Studio"},
+                {"mode": "review", "label": "Review"}
+            ]
+
+            delegate: Button {
+                required property var modelData
+                readonly property int ticketCount: studio.reviewBoard.ticketCount
+                text: modelData.mode === "review" && ticketCount > 0
+                      ? modelData.label + "  " + ticketCount : modelData.label
+                flat: headerBar.mode !== modelData.mode
+                highlighted: headerBar.mode === modelData.mode
+                focusPolicy: Qt.NoFocus
+                onClicked: headerBar.modeRequested(modelData.mode)
             }
         }
 
