@@ -156,3 +156,24 @@ MANAGER_WAIT_MAX_S = 1800
 # Chat items a transcript read returns unless asked for more, and the most it returns.
 MANAGER_TRANSCRIPT_ITEMS = 20
 MANAGER_TRANSCRIPT_ITEMS_MAX = 200
+
+# ========================================================================================
+# The review queue and its ticket tracker
+# ========================================================================================
+
+# Claude Code's own config, whose `mcpServers` entries hold the tracker credentials Atelier borrows (see
+# docs/review.md). `ATELIER_CLAUDE_CONFIG` points elsewhere, which is how the tests use a credentials file of their own.
+CLAUDE_CONFIG_PATH_ENV = "ATELIER_CLAUDE_CONFIG"
+CLAUDE_CONFIG_FILE_NAME = ".claude.json"
+# `<state>/review/<ticket>/` holds what Atelier keeps per ticket; `delivery/<comment id>/` its latest delivery's files.
+REVIEW_DIR_NAME = "review"
+REVIEW_DELIVERY_DIR_NAME = "delivery"
+# How often the queue is read again when nothing asks for it sooner. Slow on purpose: a refresh reads every ticket in
+# every queue with its comments, and the reviewer refreshes on demand when they want it now.
+DEFAULT_REVIEW_POLL_MINUTES = 5.0
+# Files that name the ticket an asset was built for, and so link a queue item to the source it opens in the viewer.
+DEFAULT_TICKET_FILE_GLOBS = ("SourceArt/**/reference.json", "SourceArt/**/spec.md")
+# Delivery attachments downloaded at once on a refresh.
+REVIEW_DOWNLOAD_WORKERS = 4
+# A tracker request still unanswered after this long fails, so a dead connection never stalls the queue.
+TRACKER_TIMEOUT_S = 60

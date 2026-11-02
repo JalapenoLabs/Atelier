@@ -2,21 +2,30 @@
 
 Every key is optional and falls back to the defaults documented in `docs/catalog.md`. Unknown keys are rejected
 rather than ignored, so a typo in a hand-written config fails loudly instead of silently changing discovery.
+
+The `[review]` table (`docs/review.md`) names the project's ticket tracker and its review queues. Its vocabulary,
+`TrackerKind` and `ReviewVerdict`, is defined here rather than in `atelierd.trackers` or `atelierd.review`, because
+both of those read this module: the config is the layer everything else builds on.
 """
 
 from __future__ import annotations
 
 import logging
+import re
 import tomllib
+import urllib.parse
+from enum import StrEnum
 from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from atelierd.constants import (
     DEFAULT_REFERENCE_DROP_FOLDER,
     DEFAULT_REFERENCE_GLOBS,
+    DEFAULT_REVIEW_POLL_MINUTES,
     DEFAULT_ROOTS,
     DEFAULT_SHARED,
+    DEFAULT_TICKET_FILE_GLOBS,
 )
 
 logger = logging.getLogger(__name__)
@@ -53,6 +62,96 @@ class SourceOverride(BaseModel):
     )
 
 
+class TrackerKind(StrEnum):
+    """The ticket trackers Atelier can read a review queue from."""
+
+    YOUTRACK = "youtrack"
+
+
+class ReviewVerdict(StrEnum):
+    """What the reviewer decided about one ticket."""
+
+    APPROVE = "approve"
+    CHANGES = "changes"
+
+
+class TrackerConfig(BaseModel):
+    """The `[review.tracker]` table: which tracker holds the project's tickets, and who Atelier acts as there."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    kind: TrackerKind
+    url: str = Field(description="The tracker's address, such as https://example.youtrack.cloud.")
+    project: str = Field(description="The project key every queue query is scoped to, such as WAY.")
+    reviewer: str = Field(
+        description="The `mcpServers` entry in Claude Code's ~/.claude.json whose Authorization header Atelier reads "
+        "and posts decisions with. Its server must be on the same host as `url`.",
+    )
+    stage_field: str = Field(default="Stage", description="The ticket field that holds its stage.")
+
+    @field_validator("url")
+    @classmethod
+    def _url_is_http(cls, url: str) -> str:
+        parsed_url = urllib.parse.urlsplit(url)
+        if parsed_url.scheme not in ("https", "http") or not parsed_url.netloc:
+            raise ValueError(f"'{url}' is not an http(s) address")
+        return url.rstrip("/")
+
+
+class LinkedStageRule(BaseModel):
+    """A `[[review.on_approve]]` entry: approving a ticket moves the tickets linked to it from one stage to another."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    tagged: str | None = Field(default=None, description="Only for approved tickets carrying this tag.")
+    linked_summary: str = Field(
+        description="A regular expression the linked ticket's summary must match from its start, such as "
+        "'\\[UI\\] Adopt'.",
+    )
+    from_stage: str = Field(description="Only linked tickets in this stage move; the rest are left alone.")
+    to_stage: str
+
+    @field_validator("linked_summary")
+    @classmethod
+    def _summary_pattern_compiles(cls, pattern: str) -> str:
+        try:
+            re.compile(pattern)
+        except re.error as error:
+            raise ValueError(f"'{pattern}' is not a regular expression: {error}") from error
+        return pattern
+
+
+class ReviewConfig(BaseModel):
+    """The `[review]` table: the project's review queue and what each decision does to a ticket."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    tracker: TrackerConfig
+    queues: dict[str, str] = Field(
+        min_length=1,
+        description="The queue's tabs in order, each a name and the tracker query that lists its tickets.",
+    )
+    stages: dict[ReviewVerdict, str] = Field(description="The stage each verdict moves its ticket to.")
+    on_approve: tuple[LinkedStageRule, ...] = ()
+    poll_minutes: float = Field(
+        default=DEFAULT_REVIEW_POLL_MINUTES,
+        gt=0,
+        description="How often the queue is read again when nobody asks for it sooner.",
+    )
+    ticket_files: tuple[str, ...] = Field(
+        default=DEFAULT_TICKET_FILE_GLOBS,
+        description="Project-relative globs of the files that name the ticket an asset was built for.",
+    )
+
+    @field_validator("stages")
+    @classmethod
+    def _every_verdict_has_a_stage(cls, stages: dict[ReviewVerdict, str]) -> dict[ReviewVerdict, str]:
+        missing = [verdict.value for verdict in ReviewVerdict if verdict not in stages]
+        if missing:
+            raise ValueError(f"[review.stages] needs a stage for {', '.join(missing)}")
+        return stages
+
+
 class AtelierConfig(BaseModel):
     """A project's `atelier.toml`, with defaults filled in."""
 
@@ -68,6 +167,7 @@ class AtelierConfig(BaseModel):
         default_factory=dict,
         description="Overrides keyed by the source's project-relative .blend path.",
     )
+    review: ReviewConfig | None = Field(default=None, description="The review queue, when the project has one.")
 
 
 def load_config(config_path: Path) -> AtelierConfig:

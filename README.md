@@ -9,7 +9,8 @@ anything. Its own state lives in a `.atelier/` folder inside the project, which 
 
 ## Parts
 
-- **`atelierd`**: a per-user daemon that owns the catalog, revisions, Claude Code workers and their Blender instances.
+- **`atelierd`**: a per-user daemon that owns the catalog, revisions, Claude Code workers and their Blender instances,
+  and each project's review queue, read from its ticket tracker.
 - **`atelier`**: the PySide6 / Qt Quick desktop app, a client of the daemon over its JSON-RPC socket.
 - **Manager MCP**: the daemon also serves MCP, so a managing Claude session can browse assets, look at renders and
   direct workers.
@@ -62,6 +63,7 @@ answer a worker's approval requests or set a source's status: those stay with yo
 | [viewer.md](docs/viewer.md)              | The window, the 3D viewport, the render gallery               |
 | [revisions.md](docs/revisions.md)        | Snapshots, standard renders, compare, restore                 |
 | [workers.md](docs/workers.md)            | Claude Code workers, per-worker Blender, approvals, markup    |
+| [review.md](docs/review.md)              | The review queue from a ticket tracker, deliveries, decisions |
 | [mcp.md](docs/mcp.md)                    | The manager-facing MCP tools                                  |
 | [theming.md](docs/theming.md)            | The theme file, its tokens, live reload, an Omarchy example   |
 | [roadmap.md](docs/roadmap.md)            | What comes after v1                                           |

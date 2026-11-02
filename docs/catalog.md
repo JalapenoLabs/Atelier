@@ -86,6 +86,9 @@ Every key is optional. The values shown for `roots`, `shared`, `references.globs
 defaults. Unknown keys are an error, so a typo fails the scan instead of silently changing discovery. Globs are
 project-relative and support `**` and `{a,b}`.
 
+The `[review]` table names the project's ticket tracker, its review queues and what each decision does to a ticket;
+it is described in `review.md`.
+
 `outputs` **replaces** the conventional exports and renders of that source with the files its globs match, classified
 by the same export and render rules. The source's `.blend`, builder and README are still found by convention. An
 override naming a path that is not a source is reported by the scan as a warning.

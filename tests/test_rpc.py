@@ -10,11 +10,14 @@ from pathlib import Path
 
 import pytest
 from conftest import RunningDaemon
+from fake_tracker import REVIEW_CONFIG, FakeTracker, add_review_scenario
 
 from atelierd.catalog import CatalogEvent
+from atelierd.review import ReviewEvent, ReviewEventKind
 from atelierd.rpc import protocol
 from atelierd.rpc.client import DaemonUnavailableError, RpcClient
 from atelierd.rpc.server import SocketInUseError, _claim_socket_path
+from atelierd.trackers import TrackerError
 
 
 def test_the_socket_is_the_owners_alone(daemon: RunningDaemon) -> None:
@@ -94,3 +97,42 @@ def test_no_daemon_is_a_clear_error(tmp_path: Path) -> None:
     client = RpcClient(tmp_path / "none.sock", on_event=lambda project, event: None, on_disconnect=lambda: None)
     with pytest.raises(DaemonUnavailableError, match="No Atelier daemon"):
         client.connect()
+
+
+def test_the_review_queue_is_read_and_refreshed_over_the_socket(
+    daemon: RunningDaemon,
+    project_root: Path,
+    fake_tracker: FakeTracker,
+) -> None:
+    config_path = project_root / "atelier.toml"
+    config_path.write_text(config_path.read_text(encoding="utf-8") + REVIEW_CONFIG, encoding="utf-8")
+    add_review_scenario(fake_tracker)
+    review_events: list[ReviewEvent] = []
+    refreshed = threading.Event()
+
+    def on_event(project: str, event: object) -> None:
+        if isinstance(event, ReviewEvent):
+            review_events.append(event)
+            refreshed.set()
+
+    client = daemon.client(on_event)
+    client.call(protocol.SUBSCRIBE, protocol.SubscribeParams())
+    # Opening the project starts its poll, whose first refresh is heard as an event.
+    project = client.call(protocol.OPEN_PROJECT, protocol.OpenProjectParams(reference=str(project_root))).name
+    assert refreshed.wait(15)
+    assert review_events[0].kind is ReviewEventKind.REFRESHED
+    assert set(review_events[0].added) == {"WAY-60", "WAY-61", "WAY-70"}
+
+    queue = client.call(protocol.GET_REVIEW_QUEUE, protocol.ProjectParams(project=project))
+    assert [tab.name for tab in queue.tabs] == ["Art", "UI"]
+    item = client.call(protocol.GET_REVIEW_ITEM, protocol.TicketParams(project=project, ticket="WAY-60"))
+    assert item.delivery is not None
+    assert item.delivery.attachments[0].path.read_bytes() == b"hero-round-2"
+    with pytest.raises(KeyError, match="not in the review queue"):
+        client.call(protocol.GET_REVIEW_ITEM, protocol.TicketParams(project=project, ticket="WAY-99"))
+
+    fake_tracker.search_error = "YouTrack answered 401 to GET /api/issues"
+    with pytest.raises(TrackerError, match="401"):
+        client.call(protocol.REFRESH_REVIEW_QUEUE, protocol.ProjectParams(project=project))
+    fake_tracker.search_error = None
+    assert client.call(protocol.REFRESH_REVIEW_QUEUE, protocol.ProjectParams(project=project)).error == ""

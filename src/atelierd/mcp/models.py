@@ -118,3 +118,53 @@ class RestoreSummary(_ManagerModel):
     written: tuple[str, ...] = ()
     deleted: tuple[str, ...] = ()
     skipped: tuple[str, ...] = Field(default=(), description="Shared files left alone because other sources use them.")
+
+
+class ReviewItemSummary(_ManagerModel):
+    """One ticket waiting for review, in a queue listing."""
+
+    ticket: str
+    summary: str
+    stage: str | None = None
+    tags: tuple[str, ...] = ()
+    queues: tuple[str, ...] = ()
+    source: str | None = Field(default=None, description="The catalog source its asset is built in, when linked.")
+    delivery_files: tuple[str, ...] = Field(default=(), description="The latest delivery's files, by name.")
+    comments: int = 0
+    updated_at: str
+
+
+class ReviewQueueSummary(_ManagerModel):
+    """A project's review queue, as of its last refresh."""
+
+    is_configured: bool
+    refreshed_at: str | None = None
+    error: str | None = Field(default=None, description="Why the last refresh failed; the items are older.")
+    tabs: dict[str, int] = Field(default_factory=dict, description="Each queue with how many tickets it lists.")
+    items: tuple[ReviewItemSummary, ...] = ()
+
+
+class ReviewCommentLine(_ManagerModel):
+    """One comment on a ticket, its text cut short."""
+
+    author: str
+    created_at: str
+    text: str
+    files: tuple[str, ...] = ()
+    is_reviewer: bool = False
+
+
+class ReviewItemDetail(_ManagerModel):
+    """One ticket waiting for review, with its comments and latest delivery."""
+
+    ticket: str
+    summary: str
+    stage: str | None = None
+    tags: tuple[str, ...] = ()
+    url: str
+    queues: tuple[str, ...] = ()
+    source: str | None = None
+    exports: tuple[str, ...] = Field(default=(), description="Of the source's exports, those the ticket covers.")
+    delivery: ReviewCommentLine | None = Field(default=None, description="The latest delivery comment, in full.")
+    delivery_error: str | None = None
+    comments: tuple[ReviewCommentLine, ...] = Field(default=(), description="Oldest first.")

@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 from conftest import RunningDaemon, wait_for
+from fake_tracker import FakeTracker
 
 from atelierd.revisions import RevisionTrigger, SourceBusyError
 from atelierd.rpc import protocol
@@ -202,12 +203,18 @@ class TestSessions:
         assert [item.text for item in second.items if item.kind is ChatItemKind.ASSISTANT] == ["two"]
         assert [info.session_id for info in second.sessions] == [second.info.session_id, first.info.session_id]
 
-    def test_the_transcript_survives_the_daemon(self, session: Session, project_root: Path, tmp_path: Path) -> None:
+    def test_the_transcript_survives_the_daemon(
+        self,
+        session: Session,
+        project_root: Path,
+        tmp_path: Path,
+        fake_tracker: FakeTracker,
+    ) -> None:
         session.prompt("SAY remembered")
         before = session.wait_idle()
         session.daemon.stop()
 
-        restarted = RunningDaemon(session.daemon.options)
+        restarted = RunningDaemon(session.daemon.options, fake_tracker.opener)
         restarted.start()
         try:
             again = Session(restarted, project_root)

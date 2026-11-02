@@ -49,6 +49,8 @@ calls" in `architecture.md`), each in a thread off the daemon's event loop.
 |            | `list_workers`      | Every worker of the project that has run since the daemon started, and every pending approval in it |
 |            | `interrupt_worker`  | Interrupt the running turn; it ends as interrupted and records a revision      |
 | Revisions  | `restore_revision`  | Restore a source to a revision (see `revisions.md`); returns the revisions it recorded and the files written, deleted and skipped |
+| Review queue | `list_review_queue` | The tickets waiting for review in the project's tracker (see `review.md`), least recently updated first, with each tab's count, their latest delivery's files and linked source; `queue` filters to one tab, `refresh` reads the tracker first |
+|            | `get_review_item`   | One ticket: its comments (cut to 400 characters), its latest delivery in full, its linked source and exports, and with `include_images` the delivery's images |
 
 Failures the core raises on purpose (an unknown source, a turn already running, a restore while one runs) come back as
 tool errors with the core's message, so a manager can act on them.
@@ -78,4 +80,5 @@ Enforced by what `manager.py` calls, and tested in `tests/test_manager_mcp.py`:
   receives has no approval id. Escalations always come to you, in the window.
 - A manager cannot set a source's status, `approved` or any other: there is no status tool. Final sign-off is yours,
   in the GUI.
+- A manager reads the review queue but never decides a ticket: no tool posts to the tracker or moves a stage.
 - Renders come back as image content, so a manager can judge the work the same way you do, without disk access.

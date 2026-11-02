@@ -10,6 +10,7 @@ What a manager may not do is enforced by what this module calls, and tested:
   carry no id, so nothing it receives could answer one.
 - It never sets a source's status. There is no status tool at all: `approved` is the human reviewer's sign-off, and
   the other statuses are the reviewer's to set too, in the window.
+- It reads the review queue but never decides a ticket: no tool posts to the tracker or moves a stage.
 
 Tools return compact models (`models.py`) and images scaled down by `images.py`, because everything a tool returns
 lands in the manager's context. Waiting is built in where a manager would otherwise poll: `get_worker` can wait for a
@@ -55,6 +56,10 @@ from atelierd.mcp.models import (
     ProjectSummary,
     ProjectWorkers,
     RestoreSummary,
+    ReviewCommentLine,
+    ReviewItemDetail,
+    ReviewItemSummary,
+    ReviewQueueSummary,
     RevisionSummary,
     SourceDetail,
     SourceSummary,
@@ -69,6 +74,7 @@ from atelierd.revisions import (
     SourceHistory,
     StandardRenderSet,
 )
+from atelierd.trackers import TrackerError
 from atelierd.workers import Approval, ChatItem, ChatItemKind, WorkerBusyError
 
 logger = logging.getLogger(__name__)
@@ -82,7 +88,9 @@ _INSTRUCTIONS = (
     "turn to end, then get_renders or compare_revisions on the revision the turn recorded. A worker's tool calls "
     "outside its source's folder wait for the human reviewer's approval in the Atelier window; you can see them in "
     "get_worker but never answer them, so tell the user when a turn is waiting on one. A source's review status, "
-    "and approving a source, are the user's alone. Images cost context: ask only for the views you need."
+    "and approving a source, are the user's alone. Images cost context: ask only for the views you need. "
+    "list_review_queue and get_review_item show the tickets waiting for the user's review in the project's tracker; "
+    "the user decides them in the Atelier window."
 )
 
 # The views a manager can ask for; the same names the standard renders are written under.
@@ -100,6 +108,7 @@ _EXPECTED_ERRORS = (
     NotADirectoryError,
     RegistryError,
     SourceBusyError,
+    TrackerError,
     ValueError,
     WorkerBusyError,
 )
@@ -405,6 +414,117 @@ def build_manager_mcp(core: AtelierCore) -> MCPServer:
                 if include_images and feedback.annotated_path.is_file():
                     content.append(Image(data=scaled_jpeg(feedback.annotated_path, size), format="jpeg"))
             return content or [f"{source_path} has no feedback"]
+
+        return await _run(_work)
+
+    # ####################### #
+    #      REVIEW QUEUE       #
+    # ####################### #
+
+    @server.tool(structured_output=False)
+    async def list_review_queue(
+        project: ProjectArgument = None,
+        queue: Annotated[
+            str | None,
+            Field(description="Only the tickets of this queue (a tab name the listing gives, such as 'Art')."),
+        ] = None,
+        refresh: Annotated[
+            bool,
+            Field(description="Read the tracker again first instead of answering from the last refresh."),
+        ] = False,
+    ) -> str:
+        """List the tickets waiting for the user's review in the project's tracker, least recently updated first."""
+
+        def _work() -> ReviewQueueSummary:
+            runtime = _open_runtime(core, project)
+            review_queue = runtime.review.refresh() if refresh else runtime.review.queue()
+            tab_names = [tab.name for tab in review_queue.tabs]
+            if queue is not None and queue not in tab_names:
+                raise ValueError(f"No queue '{queue}'; the queues are {', '.join(tab_names) or 'none'}")
+            items = [item for item in review_queue.items if queue is None or queue in item.queues]
+            return ReviewQueueSummary(
+                is_configured=review_queue.is_configured,
+                refreshed_at=review_queue.refreshed_at,
+                error=review_queue.error or None,
+                tabs={tab.name: len(tab.tickets) for tab in review_queue.tabs},
+                items=tuple(
+                    ReviewItemSummary(
+                        ticket=item.ticket,
+                        summary=item.summary,
+                        stage=item.stage,
+                        tags=item.tags,
+                        queues=item.queues,
+                        source=item.link.source if item.link else None,
+                        delivery_files=tuple(attachment.name for attachment in item.delivery.attachments)
+                        if item.delivery
+                        else (),
+                        comments=len(item.comments),
+                        updated_at=item.updated_at,
+                    )
+                    for item in items
+                ),
+            )
+
+        return await _run_as_json(_work)
+
+    @server.tool(structured_output=False)
+    async def get_review_item(
+        ticket: Annotated[str, Field(description="The ticket, such as WAY-60, as list_review_queue gives it.")],
+        project: ProjectArgument = None,
+        include_images: Annotated[
+            bool,
+            Field(description="Also return the latest delivery's images (renders, compare sheets) as images."),
+        ] = False,
+        size: SizeArgument = MANAGER_IMAGE_EDGE,
+    ) -> list[str | Image]:
+        """One ticket waiting for review: its comments, its latest delivery and the source it links to."""
+
+        def _work() -> list[str | Image]:
+            runtime = _open_runtime(core, project)
+            item = runtime.review.item(ticket)
+            delivery = item.delivery
+            detail = ReviewItemDetail(
+                ticket=item.ticket,
+                summary=item.summary,
+                stage=item.stage,
+                tags=item.tags,
+                url=item.url,
+                queues=item.queues,
+                source=item.link.source if item.link else None,
+                exports=item.link.exports if item.link else (),
+                delivery=ReviewCommentLine(
+                    author=delivery.author,
+                    created_at=delivery.created_at,
+                    text=delivery.text,
+                    files=tuple(attachment.name for attachment in delivery.attachments),
+                )
+                if delivery
+                else None,
+                delivery_error=(delivery.error or None) if delivery else None,
+                comments=tuple(
+                    ReviewCommentLine(
+                        author=comment.author,
+                        created_at=comment.created_at,
+                        text=_clip(comment.text, _TRANSCRIPT_TEXT_LIMIT),
+                        files=comment.attachment_names,
+                        is_reviewer=comment.is_reviewer,
+                    )
+                    for comment in item.comments
+                ),
+            )
+            content: list[str | Image] = [detail.model_dump_json(exclude_none=True)]
+            if include_images and delivery:
+                for attachment in delivery.attachments:
+                    if not attachment.mime_type.startswith("image/"):
+                        continue
+                    content.append(attachment.name)
+                    try:
+                        content.append(Image(data=scaled_jpeg(attachment.path, size), format="jpeg"))
+                    except OSError as error:
+                        # Downloaded files are untrusted: one that is not a readable image is said so, not fatal.
+                        logger.info(f"[Manager MCP] Could not read {attachment.path} as an image: {error}")
+                        content.append(f"({attachment.name} could not be read as an image)")
+            return content
 
         return await _run(_work)
 

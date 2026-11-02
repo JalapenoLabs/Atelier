@@ -24,7 +24,9 @@ from atelierd.config import ConfigError
 from atelierd.exports import ConvertedExport
 from atelierd.exports.cache import ExportConversionError
 from atelierd.registry import RegistryError
+from atelierd.review import ReviewEvent, ReviewItem, ReviewQueue
 from atelierd.revisions import RestoreResult, RevisionEvent, SourceBusyError, SourceHistory
+from atelierd.trackers import TrackerError
 from atelierd.workers import (
     Approval,
     ApprovalEvent,
@@ -150,6 +152,12 @@ class CreateFeedbackParams(ProjectParams):
     request: FeedbackRequest
 
 
+class TicketParams(ProjectParams):
+    """One ticket in an open project's review queue."""
+
+    ticket: str
+
+
 class ApprovalsParams(_Params):
     """Which project's pending approvals; none means every project's."""
 
@@ -228,6 +236,11 @@ PIN_REFERENCES = RpcMethod("workers.pin_references", PinReferencesParams, TypeAd
 CREATE_FEEDBACK = RpcMethod("feedback.create", CreateFeedbackParams, TypeAdapter(Feedback))
 LIST_FEEDBACK = RpcMethod("feedback.list", SourceParams, TypeAdapter(list[Feedback]))
 
+# Reads only: decisions are written by the daemon itself, never by a client.
+GET_REVIEW_QUEUE = RpcMethod("review.queue", ProjectParams, TypeAdapter(ReviewQueue))
+REFRESH_REVIEW_QUEUE = RpcMethod("review.refresh", ProjectParams, TypeAdapter(ReviewQueue))
+GET_REVIEW_ITEM = RpcMethod("review.item", TicketParams, TypeAdapter(ReviewItem))
+
 LIST_APPROVALS = RpcMethod("approvals.list", ApprovalsParams, TypeAdapter(list[Approval]))
 ANSWER_APPROVAL = RpcMethod("approvals.answer", AnswerApprovalParams, TypeAdapter(Approval))
 
@@ -244,13 +257,15 @@ class EventKind(StrEnum):
     REVISION = "revision"
     WORKER = "worker"
     APPROVAL = "approval"
+    REVIEW = "review"
 
 
-EVENT_MODEL_BY_KIND: dict[EventKind, type[CatalogEvent | RevisionEvent | WorkerEvent | ApprovalEvent]] = {
+EVENT_MODEL_BY_KIND: dict[EventKind, type[CatalogEvent | RevisionEvent | WorkerEvent | ApprovalEvent | ReviewEvent]] = {
     EventKind.CATALOG: CatalogEvent,
     EventKind.REVISION: RevisionEvent,
     EventKind.WORKER: WorkerEvent,
     EventKind.APPROVAL: ApprovalEvent,
+    EventKind.REVIEW: ReviewEvent,
 }
 EVENT_KIND_BY_MODEL = {model: kind for kind, model in EVENT_MODEL_BY_KIND.items()}
 if set(EVENT_MODEL_BY_KIND) != set(EventKind):
@@ -290,6 +305,7 @@ ERROR_TYPE_BY_NAME: dict[str, type[Exception]] = {
         NotADirectoryError,
         RegistryError,
         SourceBusyError,
+        TrackerError,
         ValueError,
         WorkerBusyError,
     )

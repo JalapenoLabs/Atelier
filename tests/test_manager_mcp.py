@@ -17,6 +17,7 @@ from typing import Any
 
 import pytest
 from conftest import RunningDaemon, wait_for
+from fake_tracker import REVIEW_CONFIG, FakeTracker, add_review_scenario
 from mcp import Client
 from mcp_types import CallToolResult, ImageContent, TextContent
 from PIL import Image
@@ -47,6 +48,8 @@ EXPECTED_TOOLS = {
     "list_workers",
     "interrupt_worker",
     "restore_revision",
+    "list_review_queue",
+    "get_review_item",
 }
 
 
@@ -318,6 +321,65 @@ class TestReview:
 # ####################### #
 #   REFERENCES, WORKERS   #
 # ####################### #
+
+
+class TestReviewQueue:
+    @pytest.fixture
+    def tracker(self, manager: Manager, fake_tracker: FakeTracker) -> FakeTracker:
+        config_path = manager.root / "atelier.toml"
+        config_path.write_text(config_path.read_text(encoding="utf-8") + REVIEW_CONFIG, encoding="utf-8")
+        add_review_scenario(fake_tracker)
+        hero = io.BytesIO()
+        Image.new("RGB", (800, 400), (200, 40, 40)).save(hero, format="PNG")
+        fake_tracker.files["8-1"] = hero.getvalue()
+        fake_tracker.tickets["WAY-60"] = fake_tracker.tickets["WAY-60"].model_copy(
+            update={
+                "comments": tuple(
+                    comment.model_copy(
+                        update={
+                            "attachments": tuple(
+                                attachment.model_copy(update={"size": len(hero.getvalue())})
+                                if attachment.id == "8-1"
+                                else attachment
+                                for attachment in comment.attachments
+                            )
+                        }
+                    )
+                    for comment in fake_tracker.tickets["WAY-60"].comments
+                )
+            }
+        )
+        return fake_tracker
+
+    def test_the_queue_lists_tickets_by_tab(self, manager: Manager, tracker: FakeTracker) -> None:
+        queue = manager.json("list_review_queue", refresh=True)
+        assert queue["is_configured"] is True
+        assert queue["tabs"] == {"Art": 3, "UI": 1}
+        assert [item["ticket"] for item in queue["items"]] == ["WAY-61", "WAY-60", "WAY-70"]
+        carbine = queue["items"][1]
+        assert carbine["delivery_files"] == ["hero.png", "image.png", "image-8-3.png", "_.._escape.png"]
+
+        only_ui = manager.json("list_review_queue", queue="UI")
+        assert [item["ticket"] for item in only_ui["items"]] == ["WAY-70"]
+        assert "the queues are Art, UI" in manager.error("list_review_queue", queue="Audio")
+
+    def test_an_item_comes_with_its_comments_and_delivery_images(self, manager: Manager, tracker: FakeTracker) -> None:
+        manager.json("list_review_queue", refresh=True)
+        result = manager.call("get_review_item", ticket="WAY-60", include_images=True, size=256)
+        assert not result.is_error
+        texts = _texts(result)
+        detail = json.loads(texts[0])
+        assert detail["delivery"]["text"] == "Round 2"
+        assert [comment["is_reviewer"] for comment in detail["comments"]] == [False, True, False, False]
+        # The one real image comes back scaled; the files that are not images are said to be so.
+        assert [image.size for image in _images(result)] == [(256, 128)]
+        assert "(image.png could not be read as an image)" in texts
+        assert "not in the review queue" in manager.error("get_review_item", ticket="WAY-99")
+
+    def test_no_tool_writes_to_the_tracker(self, manager: Manager, tracker: FakeTracker) -> None:
+        manager.json("list_review_queue", refresh=True)
+        manager.call("get_review_item", ticket="WAY-70", include_images=True)
+        assert tracker.writes == []
 
 
 class TestWorkers:

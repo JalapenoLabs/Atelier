@@ -47,7 +47,7 @@ from atelier.gui.revisions import (
 )
 from atelier.gui.tasks import TaskRunner
 from atelier.gui.tree import RowKind, SourceRow, TreeExpansion, build_source_rows
-from atelierd.catalog import CameraBookmark, Reference, ScanResult, Source, SourceStatus
+from atelierd.catalog import CameraBookmark, CatalogEvent, Reference, ScanResult, Source, SourceStatus
 from atelierd.exports import ConvertedExport
 from atelierd.revisions import (
     STANDARD_VIEWS,
@@ -693,6 +693,10 @@ class Studio(QObject):
         if isinstance(event, RevisionEvent):
             if event.source == self._selected_source:
                 self._refresh_history()
+            return
+        if not isinstance(event, CatalogEvent):
+            # The window has no view of the review queue, so its events have nothing to update.
+            logger.debug(f"[Studio] No view follows {type(event).__name__}")
             return
 
         is_selection_touched = self._selected_source in (*event.touched, *event.change.changed)

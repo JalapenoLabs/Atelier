@@ -36,6 +36,7 @@ from atelierd.daemon.desktop import notify_approval
 from atelierd.mcp.app import MCP_PATH, WORKER_MOUNT, build_http_app
 from atelierd.rpc.protocol import DaemonInfo
 from atelierd.rpc.server import RpcServer
+from atelierd.trackers import TrackerOpener, open_tracker
 from atelierd.workers import BlenderLauncher, WorkerSettings, launch_background_blender
 from atelierd.workers.models import Approval
 
@@ -71,10 +72,12 @@ class Daemon:
         options: DaemonOptions,
         launch_blender: BlenderLauncher = launch_background_blender,
         notify: Callable[[Approval], None] = notify_approval,
+        open_tracker: TrackerOpener = open_tracker,
     ) -> None:
         self.options = options
         self._launch_blender = launch_blender
         self._notify = notify
+        self._open_tracker = open_tracker
         self.core: AtelierCore | None = None
         self.http_port = 0
         self.is_ready = threading.Event()
@@ -104,6 +107,7 @@ class Daemon:
             self._launch_blender,
             self._notify,
             state_root=self.options.state_root,
+            open_tracker=self._open_tracker,
         )
         self.core = core
         info = DaemonInfo(

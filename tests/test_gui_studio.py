@@ -25,6 +25,7 @@ from atelierd.catalog import (
     SourceStatus,
 )
 from atelierd.exports import ConvertedExport, ExportStats
+from atelierd.review import ReviewEvent, ReviewEventKind
 from atelierd.revisions import (
     STANDARD_VIEWS,
     FileKind,
@@ -738,6 +739,11 @@ class TestDaemon:
 
         studio.startDaemon()
         wait_until(lambda: studio.property("projectName") == "Fake")
+        assert studio.property("daemonState") == DaemonState.CONNECTED
+
+    def test_review_queue_events_leave_the_window_alone(self, studio: Studio) -> None:
+        # A review event carries no catalog change; read as one, it would fail in the event handler.
+        studio._on_core_event(ReviewEvent(kind=ReviewEventKind.REFRESHED, added=("WAY-60",)))
         assert studio.property("daemonState") == DaemonState.CONNECTED
 
     def test_losing_the_daemon_says_so(self, studio: Studio, backend: FakeBackend, wait_until: WaitUntil) -> None:

@@ -1,8 +1,9 @@
 """Shared fixtures: a disposable copy of the fixture project, Qt for the GUI tests, and a daemon run in-process.
 
 The daemon fixture runs a real `atelierd` (core, JSON-RPC socket, worker-side MCP over HTTP) on a thread of its own,
-with Claude Code replaced by `fixtures/fake_claude.py` and each worker's Blender by a process that only listens on its
-port, so the worker tests run in CI with neither installed.
+with Claude Code replaced by `fixtures/fake_claude.py`, each worker's Blender by a process that only listens on its
+port, and every ticket tracker by the `fake_tracker` fixture, so the tests run in CI with none of them installed and
+never reach a real tracker.
 """
 
 from __future__ import annotations
@@ -19,11 +20,13 @@ from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
+from fake_tracker import FakeTracker
 from PySide6.QtCore import QCoreApplication
 from PySide6.QtGui import QGuiApplication
 
 from atelierd.daemon.runner import Daemon, DaemonOptions
 from atelierd.rpc.client import RpcClient
+from atelierd.trackers import TrackerOpener
 from atelierd.workers import Approval
 
 FIXTURE_PROJECT = Path(__file__).parent / "fixtures" / "project"
@@ -106,11 +109,16 @@ def launch_fake_blender(blend_file: Path, port: int) -> subprocess.Popen[bytes]:
 class RunningDaemon:
     """A daemon on a thread of its own, with what the tests need to drive it."""
 
-    def __init__(self, options: DaemonOptions) -> None:
+    def __init__(self, options: DaemonOptions, open_tracker: TrackerOpener) -> None:
         self.options = options
         self.notifications: list[Approval] = []
         self.blender_launches: list[tuple[Path, int]] = []
-        self.daemon = Daemon(options, launch_blender=self._launch_blender, notify=self.notifications.append)
+        self.daemon = Daemon(
+            options,
+            launch_blender=self._launch_blender,
+            notify=self.notifications.append,
+            open_tracker=open_tracker,
+        )
         self._loop = asyncio.new_event_loop()
         self._stop_event: asyncio.Event | None = None
         self._thread = threading.Thread(target=self._run, name="test-atelierd", daemon=True)
@@ -157,7 +165,13 @@ class RunningDaemon:
 
 
 @pytest.fixture
-def daemon(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[RunningDaemon]:
+def fake_tracker() -> FakeTracker:
+    """The ticket tracker of every project the test opens, empty until the test fills it."""
+    return FakeTracker()
+
+
+@pytest.fixture
+def daemon(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_tracker: FakeTracker) -> Iterator[RunningDaemon]:
     """A running daemon with every project's state under `tmp_path`, its workers running the fake Claude Code.
 
     Its socket sits in a short folder under /tmp: a Unix socket's path is capped near 107 bytes, which a pytest
@@ -172,7 +186,7 @@ def daemon(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[RunningD
         http_port=0,
         state_root=tmp_path / "state",
     )
-    running = RunningDaemon(options)
+    running = RunningDaemon(options, fake_tracker.opener)
     running.start()
     try:
         yield running

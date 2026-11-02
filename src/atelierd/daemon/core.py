@@ -9,11 +9,13 @@ Both front doors are thin adapters over this module: the GUI's JSON-RPC (`atelie
   (`RevisionTracker`: history, standard renders, restore), `workers` (`WorkerPool`: prompts, interrupts, sessions,
   pinned references, transcripts) and `feedback` (`FeedbackService`). Exports convert with
   `atelierd.exports.convert_export(runtime.project, path)`.
+- `ProjectRuntime.review` (`ReviewService`) is the project's review queue, read from its ticket tracker (see
+  `docs/review.md`); the tracker is opened through the core's `open_tracker`, which the tests replace with a fake.
 - `AtelierCore.approvals` (`ApprovalBroker`) holds every escalated tool call, across projects.
 
 Everything that happens is reported to subscribers as `(project name, event)` on whichever thread it happened, the
-way the window's backend reports it: catalog changes, revisions, worker output and approvals. Each subscriber hops the
-event to its own thread (the RPC to its event loop).
+way the window's backend reports it: catalog changes, revisions, worker output, approvals and review queue changes.
+Each subscriber hops the event to its own thread (the RPC to its event loop).
 
 Every method may block (scans, SQLite, Blender, hashing), so the asyncio front doors call them in a thread.
 """
@@ -28,7 +30,9 @@ from pathlib import Path
 from atelierd.catalog import Catalog, CatalogEvent, CatalogWatcher, ScanResult
 from atelierd.project import Project, open_project
 from atelierd.registry import load_registry, register_project, resolve_project_root
+from atelierd.review import ReviewEvent, ReviewService
 from atelierd.revisions import RevisionEvent, Revisions, RevisionTracker
+from atelierd.trackers import TrackerOpener, open_tracker
 from atelierd.workers import (
     ApprovalBroker,
     ApprovalEvent,
@@ -43,7 +47,7 @@ from atelierd.workers.models import Approval
 logger = logging.getLogger(__name__)
 
 # Everything the core reports as it happens.
-type CoreEvent = CatalogEvent | RevisionEvent | WorkerEvent | ApprovalEvent
+type CoreEvent = CatalogEvent | RevisionEvent | WorkerEvent | ApprovalEvent | ReviewEvent
 type CoreListener = Callable[[str, CoreEvent], None]
 
 
@@ -56,6 +60,7 @@ class ProjectRuntime:
         broker: ApprovalBroker,
         settings: WorkerSettings,
         launch_blender: BlenderLauncher,
+        open_tracker: TrackerOpener,
         emit: CoreListener,
     ) -> None:
         self.project = project
@@ -74,6 +79,8 @@ class ProjectRuntime:
         )
         self.workers = WorkerPool(project, self.revisions, self.feedback, broker, settings, launch_blender, emit_event)
         self.revisions.start()
+        self.review = ReviewService(project, self.catalog, open_tracker, emit_event)
+        self.review.start()
 
         def on_catalog_event(event: CatalogEvent) -> None:
             emit_event(event)
@@ -91,8 +98,9 @@ class ProjectRuntime:
         logger.info(f"[Core] Opened {name} at {project.root} (state in {project.state_dir})")
 
     def close(self) -> None:
-        """Stop the workers, the watcher and the revision tracker."""
+        """Stop the workers, the review poll, the watcher and the revision tracker."""
         self.workers.stop_all()
+        self.review.stop()
         self._watch_stop.set()
         self._watch_thread.join(timeout=5)
         if self._watch_thread.is_alive():
@@ -110,6 +118,7 @@ class AtelierCore:
         launch_blender: BlenderLauncher,
         notify: Callable[[Approval], None],
         state_root: Path | None = None,
+        open_tracker: TrackerOpener = open_tracker,
     ) -> None:
         """Create the core.
 
@@ -120,11 +129,13 @@ class AtelierCore:
             notify: raises a desktop notification for a new approval.
             state_root: when set, each project's state lives in `<state_root>/<project name>/` instead of its
                 `.atelier/` folder, which leaves the projects themselves untouched.
+            open_tracker: opens a project's ticket tracker from its `[review.tracker]` config.
         """
         self.registry_path = registry_path
         self.state_root = state_root
         self._settings = settings
         self._launch_blender = launch_blender
+        self._open_tracker = open_tracker
         self._guard = threading.Lock()
         self._runtimes: dict[str, ProjectRuntime] = {}
         self._listeners: list[CoreListener] = []
@@ -188,7 +199,14 @@ class AtelierCore:
             state_dir = self.state_root / project_root.name if self.state_root else None
             project = open_project(project_root, state_dir=state_dir)
             register_project(project.root, self.registry_path)
-            runtime = ProjectRuntime(project, self.approvals, self._settings, self._launch_blender, self._emit)
+            runtime = ProjectRuntime(
+                project,
+                self.approvals,
+                self._settings,
+                self._launch_blender,
+                self._open_tracker,
+                self._emit,
+            )
             self._runtimes[project.name] = runtime
             return runtime
 

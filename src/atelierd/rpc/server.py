@@ -315,6 +315,10 @@ class RpcServer:
             lambda params: core.project(params.project).feedback.list_feedback(params.source),
         )
 
+        register(protocol.GET_REVIEW_QUEUE, lambda params: core.project(params.project).review.queue())
+        register(protocol.REFRESH_REVIEW_QUEUE, lambda params: core.project(params.project).review.refresh())
+        register(protocol.GET_REVIEW_ITEM, lambda params: core.project(params.project).review.item(params.ticket))
+
         register(protocol.LIST_APPROVALS, lambda params: core.approvals.list_pending(params.project))
         register(
             protocol.ANSWER_APPROVAL,

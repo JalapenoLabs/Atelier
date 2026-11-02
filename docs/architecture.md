@@ -12,7 +12,8 @@
 ```
 
 - **`atelierd` owns everything that runs or persists**: the catalog and file watcher, the revision store, the
-  standard-render pipeline, Claude Code worker processes and each worker's Blender. Workers keep running when the GUI
+  standard-render pipeline, Claude Code worker processes and each worker's Blender, and each project's review queue
+  with its link to the project's ticket tracker (see "Ticket trackers" below). Workers keep running when the GUI
   closes, and a manager session can reach them whether or not a window is open.
 - **The GUI is a client.** It renders state and sends commands; it holds no state of its own beyond window layout
   (panel sizes, display settings, the last project). It reaches the core through one interface,
@@ -55,9 +56,10 @@ offers to start it again.
 
 The RPC (`atelierd.rpc`) is one JSON object per line. `protocol.py` declares every method once, with its params
 model and result type, and both the server and the client read it. Errors the core raises on purpose (`KeyError` for
-an unknown source, `SourceBusyError`, `WorkerBusyError`) cross as themselves, so the window handles a daemon failure
+an unknown source, `SourceBusyError`, `WorkerBusyError`, `TrackerError`) cross as themselves, so the window handles a daemon failure
 the way it would the core's. After `events.subscribe` (to one project or all), a client receives `event`
-notifications carrying the open projects' catalog changes, new revisions, worker output and approvals. Every call
+notifications carrying the open projects' catalog changes, new revisions, worker output, approvals and review queue
+changes. Every call
 runs in a thread off the daemon's event loop, and core events, which arrive on the core's threads, are hopped onto
 the loop before they are written. The HTTP front door (`atelierd.mcp.app`) is one Starlette app served by uvicorn on
 the same loop; the manager MCP is served there beside the worker server.
@@ -77,6 +79,7 @@ guarantee.
 | `<project>/.atelier/transcripts/`       | Worker chats, one JSON-lines file per session, with tool images |
 | `<project>/.atelier/workers/`           | Each worker's policy, MCP config and hook settings           |
 | `<project>/.atelier/cache/`             | Exports converted to `.glb` with their stats, named by the FBX's sha256 (see `viewer.md`) |
+| `<project>/.atelier/review/`            | Per ticket in the review queue, its latest delivery's downloaded files (see `review.md`) |
 | `~/.local/share/atelier/projects.toml`  | The machine's registry of known projects                     |
 
 Per-project state travels with the project's drive and never mixes facts from two projects, so every path stored in
@@ -110,7 +113,7 @@ One `uv` project, two import packages under `src/`:
 
 | Package    | Holds                                                                                          |
 |------------|------------------------------------------------------------------------------------------------|
-| `atelierd` | The core: `config` (`atelier.toml`), `registry`, `project` (paths, state folder, ignore entry), `catalog` (discovery, references, `state.db` store, the `Catalog` service, the watcher), `blender` (running a script in headless Blender), `exports` (converting exports to `.glb` and measuring them, cached), `revisions` (the object store, revision manifests, standard renders, restore and prune, and the `RevisionTracker` that records and renders in the background), `workers` (the worker, its processes, the scope policy and its hook, approvals, transcripts, feedback and their `state.db` tables). The daemon: `daemon` (the core every front door calls, running it, the command line, the systemd unit), `rpc` (the GUI's front door: protocol, server, client) and `mcp` (the HTTP front door, the worker-side MCP server, and the manager MCP with its image scaling). |
+| `atelierd` | The core: `config` (`atelier.toml`), `registry`, `project` (paths, state folder, ignore entry), `catalog` (discovery, references, `state.db` store, the `Catalog` service, the watcher), `blender` (running a script in headless Blender), `exports` (converting exports to `.glb` and measuring them, cached), `revisions` (the object store, revision manifests, standard renders, restore and prune, and the `RevisionTracker` that records and renders in the background), `workers` (the worker, its processes, the scope policy and its hook, approvals, transcripts, feedback and their `state.db` tables), `trackers` (the ticket tracker contract, credentials borrowed from Claude Code, one module per tracker and the lookup by kind), `review` (the review queue: refreshing, downloads, links to sources, decisions). The daemon: `daemon` (the core every front door calls, running it, the command line, the systemd unit), `rpc` (the GUI's front door: protocol, server, client) and `mcp` (the HTTP front door, the worker-side MCP server, and the manager MCP with its image scaling). |
 | `atelier`  | Front ends: the `atelier` command line (`atelier.cli`: `scan`, `prune`), and the desktop app (`atelier.gui`: the backend interface and its RPC implementation, the `Studio` view-model with the chat and markup editor, the theme file and its watcher, and the QML in `gui/qml/`). |
 
 `atelier` imports `atelierd`; `atelierd` never imports `atelier`. The core neither prints nor parses arguments: its
@@ -129,8 +132,24 @@ manager MCP calls the same way. Every call may block, so an asyncio front door r
 | References | `runtime.catalog.list_references()`; `runtime.workers.get(source).pin_references(paths)` |
 | Workers    | `runtime.workers.send_prompt(source, prompt, feedback_id=None)`, `.get(source).interrupt()`, `.new_session()`, `.stop()`, `runtime.workers.list_infos()` |
 | Revisions  | `runtime.revisions.restore(source, revision_id)` (refused with `SourceBusyError` while a turn runs) |
+| Review     | `runtime.review` (`ReviewService`): `queue()`, `refresh()`, `item(ticket)`; `apply_decision(...)`, which no front door calls |
 | Approvals  | `core.approvals.list_pending(project)`, `core.approvals.answer(...)` (the GUI's alone)          |
 | Events     | `core.subscribe(listener) -> unsubscribe`: `listener(project name, event)` on any thread         |
+
+## Ticket trackers
+
+A project with a `[review]` table in `atelier.toml` has a review queue read from its ticket tracker (`review.md`).
+The tracker is reached through one contract, `atelierd.trackers.base.Tracker`, with one implementation per tracker
+(YouTrack today) chosen by the config's `kind`; the review queue never knows which tracker it talks to. The daemon
+opens a project's tracker through an `open_tracker` function the core is given, the real lookup by default and a
+fake in every test, so no test reaches a real tracker.
+
+- **Credentials are Claude Code's**: the `Authorization` header of a named `mcpServers` entry in `~/.claude.json`,
+  read afresh for every refresh and decision, sent only to the host that entry serves, and never logged or stored.
+- **Reads** happen on each project's poll thread and on demand; **writes** (a comment, its attachments, stage moves)
+  happen only in `ReviewService.apply_decision`, as the reviewer, with the comment and its attachments under the same
+  identity.
+- Every tracker call blocks on the network, so like every core call it runs off the daemon's event loop.
 
 A worker's whole transcript is also on disk, `<state>/transcripts/<session id>.jsonl`, readable with
 `atelierd.workers.transcript.read_transcript`.
