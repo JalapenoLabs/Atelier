@@ -188,7 +188,8 @@ there is never overwritten: the same image is not copied again, and a different 
 
 The window reaches the core through exactly one interface, `atelier.gui.backend.StudioBackend`: reach the daemon and
 follow its events (the open project's catalog changes, revisions and worker output, every project's approvals, and
-losing the daemon, on one stream), open a project, list sources and references, set a status, keep bookmarks, add a
+losing the daemon, on one stream; the open project's review queue events arrive too, and the window has no view of
+the queue to update), open a project, list sources and references, set a status, keep bookmarks, add a
 reference, convert an export, read a source's revision history, ask for standard renders, convert a revision's
 export, restore, drive a source's worker, pin references, store feedback and answer approvals. It speaks only in core
 models and project-relative paths, plus absolute paths into the state folder (converted models, standard renders,
