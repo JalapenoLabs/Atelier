@@ -47,8 +47,9 @@ Over its REST API, as measured against YouTrack Cloud:
   without a signature. A signed URL is a credential for about two weeks, so it never leaves the daemon either.
 - Files upload one per request (multipart field `upload`), each to the comment the same identity just posted.
   YouTrack answers 403 to attachments on another user's comment.
-- The stage moves through the commands API (`Stage Done`; a value with spaces in braces). Tags are only read, never
-  applied by command, which would create a tag literally named `{Two words}`.
+- The stage moves through the commands API (`Stage Done`, `State In Progress`), a value with spaces written as it is:
+  braces are taken literally, and `State {In Progress}` is refused. Tags are only read, never applied by command,
+  which would create a tag literally named `{Two words}`.
 
 ## Configuration
 
@@ -129,7 +130,8 @@ to `to_stage`. The ticket then leaves the queue at once (a `decided` event), and
 the tracker when it was decided cannot bring it back.
 
 A step that fails raises `DecisionError`, whose `posted` is the comment already on the ticket, if any; passing it back
-as `posted` retries the rest without posting the comment twice. Decisions are never retried silently.
+as `posted` retries the rest without posting the comment twice, and attaches only the files that comment does not
+already carry. Decisions are never retried silently.
 
 The comment is posted exactly as given. `apply_decision` is only ever called by a decision job: no front door posts
 to the tracker, and the manager MCP reads the queue only.

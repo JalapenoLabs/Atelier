@@ -59,6 +59,7 @@ class FakeTracker:
         self.failing_attachments: set[str] = set()
         self.search_error: str | None = None
         self.attach_error: str | None = None
+        self.stage_error: str | None = None
         # Called once, in the middle of the next search, to act while a refresh is reading.
         self.during_search: Callable[[], None] | None = None
         self.opened_with: list[TrackerConfig] = []
@@ -109,6 +110,10 @@ class FakeTracker:
         self._next_comment += 1
         comment_id = f"4-{self._next_comment}"
         self.writes.append(("comment", ticket_id, comment_id, text))
+        if ticket_id in self.tickets:
+            posted = make_comment(comment_id, "2026-11-01T00:00:00+00:00", author_login=REVIEWER_LOGIN, text=text)
+            ticket = self.tickets[ticket_id]
+            self.tickets[ticket_id] = ticket.model_copy(update={"comments": (*ticket.comments, posted)})
         return PostedComment(ticket=ticket_id, comment_id=comment_id, identity=self._identity)
 
     def attach_to_comment(self, comment: PostedComment, files: Sequence[Path]) -> None:
@@ -118,8 +123,24 @@ class FakeTracker:
             raise TrackerError(self.attach_error)
         for file_path in files:
             self.writes.append(("attach", comment.ticket, comment.comment_id, file_path.name))
+        if comment.ticket not in self.tickets:
+            return
+        ticket = self.tickets[comment.ticket]
+        added = tuple(
+            TicketAttachment(id=f"8-{file_path.name}", name=file_path.name, download_url="/api/files/x")
+            for file_path in files
+        )
+        comments = tuple(
+            found.model_copy(update={"attachments": (*found.attachments, *added)})
+            if found.id == comment.comment_id
+            else found
+            for found in ticket.comments
+        )
+        self.tickets[comment.ticket] = ticket.model_copy(update={"comments": comments})
 
     def move_stage(self, ticket_id: str, stage: str) -> None:
+        if self.stage_error:
+            raise TrackerError(self.stage_error)
         self.writes.append(("stage", ticket_id, stage))
         if ticket_id in self.tickets:
             self.tickets[ticket_id] = self.tickets[ticket_id].model_copy(update={"stage": stage})

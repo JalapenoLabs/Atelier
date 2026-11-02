@@ -8,8 +8,9 @@ The REST details this relies on were measured against YouTrack Cloud:
   with the header but no signature answers 400. So downloads deliberately send no header.
 - Attachments upload one file per multipart request (field `upload`): a request with several stores them all but
   lists only the last. A comment's attachments must come from the comment's author (403 otherwise).
-- Fields change through the commands API (`Stage Done`), where a value with spaces is written in braces. Tags are
-  never applied through commands, which would create a tag literally named `{Two words}`; Atelier only reads them.
+- Fields change through the commands API (`Stage Done`, `State In Progress`). A value with spaces is written as it
+  is: braces are taken literally, and `State {In Progress}` is refused with 400. Tags are never applied through
+  commands, which would create a tag literally named `{Two words}`; Atelier only reads them.
 """
 
 from __future__ import annotations
@@ -198,15 +199,11 @@ class YouTrackTracker:
 
     def move_stage(self, ticket_id: str, stage: str) -> None:
         """Set the ticket's stage through the commands API."""
-        # A field or value with spaces is one word in a command only when it is wrapped in braces.
-        command_words: list[str] = []
-        for word in (self._config.stage_field, stage):
-            has_space = any(character.isspace() for character in word)
-            command_words.append(f"{{{word}}}" if has_space else word)
+        # Written as they are, spaces and all: YouTrack matches a spaced value, and takes braces literally.
         self._call(
             "POST",
             "commands",
-            payload={"query": " ".join(command_words), "issues": [{"idReadable": ticket_id}]},
+            payload={"query": f"{self._config.stage_field} {stage}", "issues": [{"idReadable": ticket_id}]},
         )
         logger.info(f"[YouTrack] Moved {ticket_id} to {self._config.stage_field} {stage}")
 

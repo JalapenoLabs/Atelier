@@ -326,7 +326,7 @@ class ReviewService:
             comment: the comment's text, posted as it is.
             attachments: files to attach to that comment (drawings).
             posted: the comment a failed attempt already posted (from its `DecisionError`), so retrying it never
-                posts the comment twice.
+                posts the comment twice, nor attaches a file that comment already carries.
             on_posted: called with the comment as soon as it is on the ticket, before the steps after it, so a
                 caller can keep it somewhere that outlives this process.
 
@@ -345,12 +345,22 @@ class ReviewService:
         except TrackerError as error:
             raise DecisionError(str(error), posted) from error
         try:
+            to_attach = list(attachments)
             if posted is None:
                 posted = tracker.post_comment(ticket, comment)
                 if on_posted:
                     on_posted(posted)
-            if attachments:
-                tracker.attach_to_comment(posted, attachments)
+            elif to_attach:
+                # Resuming: an earlier attempt may have attached some or all of the files before it failed.
+                posted_comment_id = posted.comment_id
+                on_comment = next(
+                    (found for found in tracker.get_ticket(ticket).comments if found.id == posted_comment_id),
+                    None,
+                )
+                attached_names = {attachment.name for attachment in on_comment.attachments} if on_comment else set()
+                to_attach = [path for path in to_attach if path.name not in attached_names]
+            if to_attach:
+                tracker.attach_to_comment(posted, to_attach)
             tracker.move_stage(ticket, stage)
             moved_linked: list[str] = []
             if verdict is ReviewVerdict.APPROVE and review_config.on_approve:

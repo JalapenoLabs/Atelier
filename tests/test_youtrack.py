@@ -283,7 +283,7 @@ class TestWrites:
             open_tracker(_config(stand_in)).attach_to_comment(theirs, [tmp_path / "markup.png"])
         assert stand_in.requests == []
 
-    def test_a_stage_moves_through_a_command_with_spaced_values_in_braces(
+    def test_a_stage_moves_through_a_command_with_spaced_values_as_they_are(
         self,
         stand_in: StandIn,
         credentials: Path,
@@ -294,5 +294,5 @@ class TestWrites:
         tracker.move_stage("WAY-61", "In Progress")
         assert [json.loads(request.body) for request in stand_in.requests] == [
             {"query": "Stage Done", "issues": [{"idReadable": "WAY-60"}]},
-            {"query": "Stage {In Progress}", "issues": [{"idReadable": "WAY-61"}]},
+            {"query": "Stage In Progress", "issues": [{"idReadable": "WAY-61"}]},
         ]

@@ -331,6 +331,22 @@ class TestFailures:
         assert len(claude.prompts()) == 1
         assert len(notes_lines(project)) == 1
 
+    def test_a_retry_after_the_drawings_attached_never_attaches_them_again(
+        self, jobs: Jobs, claude: Claude, drawing: Path
+    ) -> None:
+        claude.plan({"WAY-60": {"answer": {"comment": "Shorter barrel. ![](WAY-60-markup-1.png)"}}})
+        jobs.tracker.stage_error = "YouTrack answered 400 to POST /api/commands"
+        request = DecisionRequest(
+            tickets=("WAY-60",), verdict=ReviewVerdict.CHANGES, takes=(TAKE,), drawings={"WAY-60": (drawing,)}
+        )
+        [job] = jobs.jobs.submit(request)
+        assert jobs.wait_until_settled(job.id).state is DecisionJobState.FAILED
+
+        jobs.tracker.stage_error = None
+        jobs.jobs.retry(job.id)
+        assert jobs.wait_until_settled(job.id).state is DecisionJobState.POSTED
+        assert [write[0] for write in jobs.tracker_writes("WAY-60")] == ["comment", "attach", "stage"]
+
     def test_a_failed_job_is_replaced_by_a_new_decision(self, jobs: Jobs, claude: Claude) -> None:
         claude.plan({"WAY-60": {"text": "nonsense"}})
         [failed] = jobs.jobs.submit(DecisionRequest(tickets=("WAY-60",), verdict=ReviewVerdict.CHANGES, takes=(TAKE,)))
