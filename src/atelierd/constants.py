@@ -190,3 +190,16 @@ DECISION_JOB_TIMEOUT_S = 15 * 60
 REVIEW_DECISIONS_DIR_NAME = "decisions"
 # What an approval with no words and no drawings posts, with no `claude -p` run: there is nothing to put in a voice.
 BARE_APPROVAL_COMMENT = "Approved."
+
+# ========================================================================================
+# Voice notes
+# ========================================================================================
+
+# The command that turns a take's WAV into words when `[review.voice] transcribe` names none and it is on PATH: Whisper
+# on the reviewer's own machine, so nothing said leaves it. The WAV's path is its last argument.
+DEFAULT_TRANSCRIBE_COMMAND = ("voxtype", "transcribe")
+# The keys focus mode and the bulk note leave free: hold the talk key to record, retake drops the newest take,
+# checkpoint locks the takes so far.
+DEFAULT_TALK_KEY = "`"
+DEFAULT_RETAKE_KEY = "R"
+DEFAULT_CHECKPOINT_KEY = "K"

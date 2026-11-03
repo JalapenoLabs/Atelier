@@ -1,7 +1,8 @@
 // The note for a review decision on the selected tickets (or the one under the cursor): approve with an optional
 // short note, or request changes with one note that every ticket's comment is tailored from. The note holds the
 // reviewer's takes, verbatim and in order (voice notes arrive there as takes), above the text being typed, which is
-// the last take. Enter sends, Shift+Enter starts a new line, Esc closes and keeps the note for next time.
+// the last take. Enter sends, Shift+Enter starts a new line, Esc closes and keeps the note for next time. While it is
+// open, voice notes (gui/voice.py) speak takes into it: hold ` to talk, Ctrl+R retake, Ctrl+K checkpoint by default.
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
@@ -41,6 +42,13 @@ Popup {
         color: Theme.modalDim
     }
 
+    // Takes spoken now go into this note.
+    Binding {
+        target: studio.voiceNotes
+        property: "isBulkNoteOpen"
+        value: popup.opened
+    }
+
     background: Rectangle {
         radius: 8
         color: Theme.panel
@@ -51,15 +59,24 @@ Popup {
         anchors.fill: parent
         spacing: 10
 
-        Label {
+        RowLayout {
+            objectName: "bulkNoteHeader"
             Layout.fillWidth: true
-            text: {
-                const tickets = popup.ticketCount === 1 ? "1 ticket" : popup.ticketCount + " tickets"
-                return popup.isChanges ? "Request changes on " + tickets : "Approve " + tickets
+            spacing: 10
+
+            Label {
+                Layout.fillWidth: true
+                text: {
+                    const tickets = popup.ticketCount === 1 ? "1 ticket" : popup.ticketCount + " tickets"
+                    return popup.isChanges ? "Request changes on " + tickets : "Approve " + tickets
+                }
+                color: Theme.text
+                font.pixelSize: Theme.fontTitle
+                font.bold: true
             }
-            color: Theme.text
-            font.pixelSize: Theme.fontTitle
-            font.bold: true
+            VoiceIndicator {
+                place: "bulk"
+            }
         }
 
         Label {
@@ -72,25 +89,51 @@ Popup {
                   : "A short note is optional; without one each ticket gets \"Approved.\""
         }
 
-        // The takes so far, in order: what voice notes have added.
+        // The takes so far, in order: what voice notes have added, words or on their way to words. Takes the checkpoint
+        // locks are marked down their side.
         Repeater {
             model: popup.note.takes
 
-            delegate: Rectangle {
-                required property string modelData
+            delegate: Item {
+                id: takeRow
+                required property int index
+                required property var modelData
+                readonly property bool isWords: modelData.state === "words"
                 Layout.fillWidth: true
-                implicitHeight: takeLabel.implicitHeight + 12
-                radius: 4
-                color: Theme.field
+                implicitHeight: isWords ? takeLabel.implicitHeight + 12 : spokenTake.implicitHeight
 
-                Label {
-                    id: takeLabel
+                Rectangle {
                     anchors.fill: parent
-                    anchors.margins: 6
-                    wrapMode: Text.WordWrap
-                    text: parent.modelData
-                    color: Theme.text
-                    font.pixelSize: Theme.fontNormal
+                    visible: takeRow.isWords
+                    radius: 4
+                    color: Theme.field
+
+                    Label {
+                        id: takeLabel
+                        anchors.fill: parent
+                        anchors.margins: 6
+                        anchors.leftMargin: 10
+                        wrapMode: Text.WordWrap
+                        text: takeRow.modelData.text
+                        color: Theme.text
+                        font.pixelSize: Theme.fontNormal
+                    }
+                }
+                SpokenTake {
+                    id: spokenTake
+                    anchors.fill: parent
+                    visible: !takeRow.isWords
+                    place: "bulk"
+                    takeIndex: takeRow.index
+                    takeState: takeRow.modelData.state
+                    takeError: takeRow.modelData.error
+                }
+                Rectangle {
+                    visible: takeRow.modelData.isLocked
+                    width: 3
+                    height: parent.height
+                    radius: 1
+                    color: Theme.accent
                 }
             }
         }

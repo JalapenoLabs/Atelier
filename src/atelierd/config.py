@@ -17,15 +17,18 @@ import urllib.parse
 from enum import StrEnum
 from pathlib import Path, PurePosixPath
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from atelierd.constants import (
+    DEFAULT_CHECKPOINT_KEY,
     DEFAULT_DECISION_JOBS,
     DEFAULT_REFERENCE_DROP_FOLDER,
     DEFAULT_REFERENCE_GLOBS,
+    DEFAULT_RETAKE_KEY,
     DEFAULT_REVIEW_POLL_MINUTES,
     DEFAULT_ROOTS,
     DEFAULT_SHARED,
+    DEFAULT_TALK_KEY,
     DEFAULT_TICKET_FILE_GLOBS,
 )
 
@@ -122,6 +125,50 @@ class LinkedStageRule(BaseModel):
         return pattern
 
 
+class TalkMode(StrEnum):
+    """How the talk key records a voice note."""
+
+    # Recording while the key is held; letting go ends the take.
+    HOLD = "hold"
+    # One press starts recording, the next ends the take.
+    TOGGLE = "toggle"
+
+
+class VoiceConfig(BaseModel):
+    """The `[review.voice]` table: push-to-talk voice notes in the review window, and how they are transcribed.
+
+    Keys are named as Qt names them (`` ` ``, `R`, `F8`), one key each with no modifier; the window reads them.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    transcribe: tuple[str, ...] | None = Field(
+        default=None,
+        min_length=1,
+        description="The command, and its arguments, that prints a take's words; the WAV's path is its last argument. "
+        "Without it, `voxtype transcribe` when voxtype is on PATH.",
+    )
+    talk_key: str = Field(default=DEFAULT_TALK_KEY, min_length=1, description="The key that records a take.")
+    talk_mode: TalkMode = TalkMode.HOLD
+    retake_key: str = Field(
+        default=DEFAULT_RETAKE_KEY,
+        min_length=1,
+        description="The key that discards the newest take after the checkpoint, and its recording.",
+    )
+    checkpoint_key: str = Field(
+        default=DEFAULT_CHECKPOINT_KEY,
+        min_length=1,
+        description="The key that locks the takes so far, so a retake cannot remove them.",
+    )
+
+    @model_validator(mode="after")
+    def _keys_differ(self) -> VoiceConfig:
+        keys = [self.talk_key, self.retake_key, self.checkpoint_key]
+        if len({key.casefold() for key in keys}) < len(keys):
+            raise ValueError(f"[review.voice] needs three different keys, not {', '.join(keys)}")
+        return self
+
+
 class ReviewConfig(BaseModel):
     """The `[review]` table: the project's review queue and what each decision does to a ticket."""
 
@@ -157,6 +204,7 @@ class ReviewConfig(BaseModel):
         gt=0,
         description="How many decision jobs, each one `claude -p`, run at once.",
     )
+    voice: VoiceConfig = Field(default_factory=VoiceConfig)
 
     @field_validator("rules", "direction_notes")
     @classmethod

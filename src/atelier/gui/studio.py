@@ -51,6 +51,7 @@ from atelier.gui.revisions import (
 )
 from atelier.gui.tasks import TaskRunner
 from atelier.gui.tree import RowKind, SourceRow, TreeExpansion, build_source_rows
+from atelier.gui.voice import VoiceDevices, VoiceNotes, default_voice_devices
 from atelierd.catalog import CameraBookmark, Reference, ScanResult, Source, SourceStatus
 from atelierd.exports import ConvertedExport
 from atelierd.review import DecisionJobEvent, ReviewEvent, ReviewLink
@@ -282,7 +283,14 @@ class Studio(QObject):
     # Emitted by the core's threads (the watcher, revisions); connected queued, so the handler runs on the UI thread.
     _coreEventArrived = Signal(object)
 
-    def __init__(self, backend: StudioBackend, tasks: TaskRunner, settings: QSettings) -> None:
+    def __init__(
+        self,
+        backend: StudioBackend,
+        tasks: TaskRunner,
+        settings: QSettings,
+        voice_devices: VoiceDevices | None = None,
+    ) -> None:
+        """Create the view-model; `voice_devices` defaults to the microphone and the configured transcriber."""
         super().__init__()
         self._backend = backend
         self._tasks = tasks
@@ -355,6 +363,14 @@ class Studio(QObject):
         self.markup.changed.connect(self.stageReadyChanged)
         self.review = ReviewBoard(backend, tasks, self._run_catalog, self._show_message)
         self.focus = ReviewFocus(self.review, self._show_message, self._show_linked_model)
+        self.voice = VoiceNotes(
+            backend,
+            self.review,
+            self.focus,
+            tasks,
+            self._show_message,
+            voice_devices or default_voice_devices(),
+        )
 
         self._coreEventArrived.connect(self._on_core_event)
 
@@ -497,6 +513,9 @@ class Studio(QObject):
     def _get_focus(self) -> QObject:
         return self.focus
 
+    def _get_voice(self) -> QObject:
+        return self.voice
+
     def _get_approval_rows(self) -> QObject:
         return self._approval_rows
 
@@ -569,6 +588,7 @@ class Studio(QObject):
     markupEditor = Property(QObject, _get_markup, constant=True)
     reviewBoard = Property(QObject, _get_review, constant=True)
     reviewFocus = Property(QObject, _get_focus, constant=True)
+    voiceNotes = Property(QObject, _get_voice, constant=True)
     approvalRows = Property(QObject, _get_approval_rows, constant=True)
     approvalCount = Property(int, _get_approval_count, notify=approvalsChanged)
     daemonState = Property(str, _get_daemon_state, notify=daemonChanged)
@@ -686,6 +706,7 @@ class Studio(QObject):
         self._set_references(list(result.references))
         self._refresh_approval_rows()
         self.review.open_project()
+        self.voice.reload_config()
         self.projectChanged.emit()
         self._show_message(f"{self._project_name}: {len(result.sources)} sources")
         # Opening by path registers a project the picker may not list yet.
@@ -718,6 +739,8 @@ class Studio(QObject):
             self.review.apply_job_event(event)
             return
 
+        # A settled change may be an edit to atelier.toml, whose [review.voice] the window reads itself.
+        self.voice.reload_config()
         is_selection_touched = self._selected_source in (*event.touched, *event.change.changed)
         self._run_catalog(self._backend.list_sources, lambda sources: self._on_sources(sources, is_selection_touched))
         if event.change.references_changed:

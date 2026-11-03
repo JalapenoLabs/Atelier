@@ -249,9 +249,11 @@ reviewer's takes, verbatim and in order, above a field for typing, whose text is
 on its way are left out, and the status message says how many. The decided tickets show their queued badge at once
 and leave the selection. Switching tabs starts a fresh selection.
 
-The note is `atelier.gui.review.DecisionNote`: `addTake(text)` adds a take exactly as given, and `removeLastTake()`
-drops the newest. Voice notes add each transcribed recording through `addTake`, so typed and spoken words end up in
-the same ordered takes.
+The note is `atelier.gui.review.DecisionNote`: `addTake(text)` adds a take exactly as given, `removeLastTake()` drops
+the newest after the checkpoint, and `checkpoint()` locks the takes so far. Voice notes (see `review.md`) speak takes
+into the open note: hold `` ` `` to talk, Ctrl+R to retake and Ctrl+K to checkpoint while typing in it, with a
+recording light and level meter in its header. A spoken take shows as recording, then transcribing, then its words; one
+that failed shows its error with Retry and Discard. A decision waits until every take is words.
 
 ### Focus mode
 
@@ -298,6 +300,9 @@ ticket shown; the page is `ReviewFocusPage.qml` over `atelier.gui.focus.ReviewFo
 | D                         | Draw on the image shown, or on a frame frozen from the 3D view; D, Enter or Esc keeps the drawing |
 | B                         | Sketch on a blank canvas                                                           |
 | N                         | Write in the note; Esc gives the keys back to the page                              |
+| Hold `` ` ``              | Talk: record a take into the note, transcribed when let go (see `review.md`)        |
+| R                         | Retake: discard the newest take after the checkpoint, and its recording             |
+| K                         | Checkpoint: lock the takes so far, so a retake keeps them                            |
 | Space                     | Play or pause the sound shown                                                      |
 | Esc                       | Keep an open drawing; otherwise back to the grid, the cursor on this ticket        |
 
@@ -313,9 +318,12 @@ full resolution and writes it as `drawing-<n>.png` into the ticket's **draft fol
 decision. The decision carries those files (`DecisionRequest.drawings`), and the daemon copies them into the job's own
 folder. A draft made for an earlier delivery is deleted when the ticket opens on a newer one.
 
-Voice notes are on the roadmap (#42): each transcribed recording becomes a take of the shown ticket's note through
-`ReviewFocus.current_note.addTake`, the recordings go into `ReviewFocus.draft_folder(ticket)`, and the recording
-indicator sits in the note panel's header (`focusNotesHeader`).
+**Voice notes** (`gui/voice.py`, see `review.md`) speak takes into the shown ticket's note, recorded into its draft
+folder. The note panel's header shows the talk key, or a recording light and level meter while recording, or why voice
+notes are off; spoken takes show as recording, transcribing, their words, or their error with Retry and Discard, and
+the takes a checkpoint locks are marked down their side. The talk key and Ctrl+R and Ctrl+K work while typing in the
+note too. A take keeps the ticket it was started on, so moving on while it transcribes is safe, and deciding waits
+until every take of the ticket's note is words.
 
 ## Between the window and the core
 
@@ -334,10 +342,12 @@ Above it, `atelier.gui.studio.Studio` is the view-model QML binds to (the daemon
 the tree's open rows and the row the keyboard is on, the load path, the staged revision and compare, the approvals
 list), with `gui/chat.py` (the selected source's worker and chat), `gui/markup.py` (the drawing layer, the markup
 editor, focus mode's drawings, and flattening markup onto its image), `gui/review.py` (the Review mode's
-`ReviewBoard` and its `DecisionNote`) and `gui/focus.py` (focus mode, `ReviewFocus`) beside it, and
+`ReviewBoard` and its `DecisionNote`), `gui/focus.py` (focus mode, `ReviewFocus`) and `gui/voice.py` (voice notes,
+`VoiceNotes`) beside it, and
 plain functions build the tree (`gui/tree.py`), the gallery groups (`gui/gallery.py`) and the filmstrip rows
 (`gui/revisions.py`). Backend calls run off the UI thread through `gui/tasks.py`: catalog work in order on one
-thread, conversions and review thumbnails (`gui/thumbnails.py`) on pools of their own. Show in Blender is the
+thread, conversions and review thumbnails (`gui/thumbnails.py`) on pools of their own, and voice notes' transcriptions
+in order on a thread of their own. Show in Blender is the
 window's own (`gui/desktop.py`), and so is the theme (`gui/theme.py`).
 
 ## Development
@@ -362,5 +372,7 @@ functions, the camera's math and the mouse and keys driving it (`tests/test_gui_
 thumbnails, selection and decisions, with its page driven by real keys and mouse events (`tests/test_gui_review.py`;
 on `offscreen` a shown window renders 2D frames, though nothing appears on screen), focus mode's stage, moving on,
 decisions, drawings and flattening, with its page drawn on with the mouse and driven by keys
-(`tests/test_gui_focus.py`), and a check that every QML file
+(`tests/test_gui_focus.py`), voice notes against a fake recorder and transcriber, their keys on the real window, and
+the PipeWire recorder against a stand-in `pw-record` that streams a tone, so no test touches a microphone
+(`tests/test_gui_voice.py`), and a check that every QML file
 loads without a warning against a real daemon run in the test process.

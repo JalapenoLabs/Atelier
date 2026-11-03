@@ -3,7 +3,9 @@
 Every call into the backend can block, so the window submits it here. Catalog work runs on one serial thread, which
 keeps it in order (open a project, then list its sources); Blender conversions run on their own small pool, so a slow
 conversion never holds up a click in the tree, and so do the review grid's thumbnails, so a hundred of them never hold
-up either. The callbacks always run on the UI thread, through a queued signal.
+up either. Voice notes are finished and transcribed one at a time on a thread of their own, so the GPU runs one
+transcription at a time and the takes finish in the order they were spoken. The callbacks always run on the UI thread,
+through a queued signal.
 """
 
 from __future__ import annotations
@@ -33,6 +35,7 @@ class TaskRunner(QObject):
         self._catalog_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="catalog")
         self._conversion_executor = ThreadPoolExecutor(max_workers=_CONVERSION_WORKERS, thread_name_prefix="convert")
         self._thumbnail_executor = ThreadPoolExecutor(max_workers=_THUMBNAIL_WORKERS, thread_name_prefix="thumbnail")
+        self._voice_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="voice")
         self._finished.connect(self._deliver)
 
     def run_catalog(
@@ -62,11 +65,21 @@ class TaskRunner(QObject):
         """Find or make a review thumbnail alongside other work."""
         self._submit(self._thumbnail_executor, work, on_done, on_error)
 
+    def run_voice(
+        self,
+        work: Callable[[], Any],
+        on_done: Callable[[Any], None],
+        on_error: Callable[[Exception], None],
+    ) -> None:
+        """Finish and transcribe a voice note after any submitted before it."""
+        self._submit(self._voice_executor, work, on_done, on_error)
+
     def shutdown(self) -> None:
         """Stop accepting work and drop anything not yet started."""
         self._catalog_executor.shutdown(wait=False, cancel_futures=True)
         self._conversion_executor.shutdown(wait=False, cancel_futures=True)
         self._thumbnail_executor.shutdown(wait=False, cancel_futures=True)
+        self._voice_executor.shutdown(wait=False, cancel_futures=True)
 
     def _submit(
         self,

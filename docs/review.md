@@ -91,6 +91,31 @@ to_stage = "Backlog"
 
 `rules` and `direction_notes` must stay inside the project. Unknown keys are an error, as everywhere in the file.
 
+`[review.voice]` sets up the window's voice notes (see "Voice notes" below). Every key is optional:
+
+```toml
+[review.voice]
+transcribe = ["voxtype", "transcribe"]   # the command that prints a take's words; the WAV's path is its last argument
+talk_key = "`"                          # hold to record a take
+talk_mode = "hold"                      # or "toggle": one press starts a take, the next ends it
+retake_key = "R"                        # discard the newest take after the checkpoint, and its recording
+checkpoint_key = "K"                    # lock the takes so far
+```
+
+| Key              | Default                                                      |
+|------------------|--------------------------------------------------------------|
+| `transcribe`     | `voxtype transcribe` when `voxtype` is on `PATH`; otherwise none, and voice notes are off until one is named |
+| `talk_key`       | `` ` ``                                                      |
+| `talk_mode`      | `hold`                                                       |
+| `retake_key`     | `R`                                                          |
+| `checkpoint_key` | `K`                                                          |
+
+A key is named as Qt names it (`` ` ``, `R`, `F8`): one key, no modifiers, and the three different. The defaults
+are free in focus mode and the grid. The window reads the table, not the daemon: when the project opens and again on
+every change to its files, so an edit applies without a restart. A table it cannot use (a key that is not one key, no
+transcriber, an unreadable file) turns voice notes off, and the note panel says why. The transcribe command runs as
+the reviewer, on their machine, like the builders a worker runs, so it is as trusted as the rest of the project.
+
 ## The queue
 
 `runtime.review` (`atelierd.review.ReviewService`) holds each open project's queue.
@@ -237,7 +262,45 @@ the words, for the job to split) and its drawings, and the next ticket opens wit
 window keeps what it makes for a ticket's next decision in its **draft folder**,
 `<state>/review/<ticket>/draft/<delivery comment id>/`: the drawings as `drawing-<n>.png`, which the decision names
 and the daemon copies into the job's folder. The window deletes the draft folder once the job is queued, and a draft
-made for an earlier delivery when the ticket opens on a newer one. See `viewer.md` for the keys.
+made for an earlier delivery when the ticket opens on a newer one. Voice notes (below) record into the same folder.
+See `viewer.md` for the keys.
+
+## Voice notes
+
+The reviewer can talk instead of type, in focus mode and in the grid's bulk note. Recording and transcribing both
+happen in the window (`atelier.gui.voice`), on the reviewer's machine: nothing said leaves it, and the daemon only
+ever sees the words, as takes of a decision.
+
+- **Recording.** While the talk key is held (or between two presses, in toggle mode), `pw-record` (PipeWire) streams
+  16 kHz mono samples, which the window writes as a WAV into the note's draft folder:
+  `<state>/review/<ticket>/draft/<delivery comment id>/take-<time>.wav` for focus mode's ticket, and
+  `<state>/review/bulk-note/` for the bulk note. A take goes into the note the moment it starts, so takes keep the
+  order they were spoken in. The note's header shows a recording light and a level meter while it records. A tap
+  shorter than 0.3 s is a slip, not a take.
+- **Transcribing.** Letting go stops the recording and runs the `transcribe` command on it, off the UI thread and one
+  at a time. Its standard output is the words: blank lines, colour codes, timestamped log records and voxtype's own
+  progress notes (`Loading audio file:`, `Audio format:`, `Processing … samples`) are left out. The words become the
+  take, verbatim. A take in which no words were heard is dropped, with its recording, and the status says so.
+- **Failures are never dropped.** A command that fails, cannot be found or runs past two minutes leaves its take in
+  the note with the error and its recording kept; **Retry** transcribes the recording again, **Discard** drops both.
+  A recorder that cannot start says why and makes no take.
+- **Retake** discards the newest take, with its recording; during a recording it throws that recording away.
+  **Checkpoint** locks the takes so far: a retake never removes a locked take. Locked takes are marked down their
+  side. Typed corrections still apply to any take in focus mode.
+- **Deciding waits for the words.** A decision is refused while any of its note's takes is recording, transcribing
+  or failed, with the reason in the status; it never goes without something the reviewer said. Once a decision is
+  queued, its draft folder is deleted, recordings included, as the words are in the job.
+
+| Key (default)            | Does                                                                           |
+|--------------------------|--------------------------------------------------------------------------------|
+| Hold `` ` ``             | Record a take into the note on screen; let go to transcribe it                 |
+| R, or Ctrl+R in a text field | Retake: discard the newest take after the checkpoint                       |
+| K, or Ctrl+K in a text field | Checkpoint: lock the takes so far                                          |
+
+The keys are caught on the window itself, so they work whichever item has the keyboard: the talk key is never typed
+into a field, while retake and checkpoint type their letters in a text field and act there with Ctrl. They act only
+where a note is on screen, focus mode or the open bulk note popup; elsewhere the window ignores them. Losing the
+window's focus mid-take ends the take, as letting go would.
 
 ## Front doors
 

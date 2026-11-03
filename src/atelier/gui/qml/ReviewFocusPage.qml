@@ -7,6 +7,8 @@
 // Keys, while no text field has the keyboard: Left and Right the previous and next ticket, Up and Down the previous and
 // next entry of the filmstrip, A approve, C finish with changes, D draw on the image or the 3D view (D or Enter again
 // keeps the drawing), B a blank canvas, N write in the note, Space play or pause a sound, Esc go back to the grid.
+// Voice notes' keys (hold ` to talk, R retake, K checkpoint by default) are caught on the window by gui/voice.py, so
+// they work while typing too; this page only tells it that focus mode is on screen.
 // While drawing: P pen, H highlighter, E eraser, 1 to 3 the line size, Ctrl+Z and Ctrl+Shift+Z undo and redo, and
 // Enter or Esc keep the drawing; only Discard drops it. Esc in a text field gives the keyboard back to the page.
 //
@@ -56,6 +58,13 @@ Rectangle {
             player.pause()
         else
             player.play()
+    }
+
+    // Takes spoken now go into this ticket's note.
+    Binding {
+        target: studio.voiceNotes
+        property: "isFocusShown"
+        value: focusPage.visible && focusPage.focusMode.isOpen
     }
 
     Connections {
@@ -507,7 +516,7 @@ Rectangle {
                     anchors.margins: 12
                     spacing: 8
 
-                    // The note's header. Voice notes put their recording indicator and level meter here.
+                    // The note's header, with voice notes' recording indicator and level meter.
                     RowLayout {
                         objectName: "focusNotesHeader"
                         Layout.fillWidth: true
@@ -518,12 +527,18 @@ Rectangle {
                             color: Theme.text
                             font.bold: true
                         }
+                        VoiceIndicator {
+                            place: "focus"
+                        }
                         Item {
                             Layout.fillWidth: true
                         }
                         Label {
-                            text: focusPage.note.takes.length === 1 ? "1 take" : focusPage.note.takes.length + " takes"
-                            visible: focusPage.note.takes.length > 0
+                            readonly property int takeCount: focusPage.note.takes.length
+                            readonly property int lockedCount: focusPage.note.lockedCount
+                            text: (takeCount === 1 ? "1 take" : takeCount + " takes")
+                                  + (lockedCount > 0 ? ", " + lockedCount + " locked" : "")
+                            visible: takeCount > 0
                             color: Theme.textDim
                             font.pixelSize: Theme.fontSmall
                         }
@@ -539,23 +554,56 @@ Rectangle {
                             width: notesScroll.availableWidth
                             spacing: 6
 
-                            // The takes so far, in order, each correctable before the decision goes.
+                            // The takes so far, in order: words, each correctable before the decision goes, or a
+                            // spoken take on its way to words. Takes the checkpoint locks are marked down their side.
                             Repeater {
                                 model: focusPage.note.takes
 
-                                delegate: TextArea {
+                                delegate: Item {
+                                    id: takeRow
                                     required property int index
-                                    required property string modelData
+                                    required property var modelData
+                                    readonly property bool isWords: modelData.state === "words"
                                     Layout.fillWidth: true
-                                    text: modelData
-                                    wrapMode: TextEdit.Wrap
-                                    font.pixelSize: Theme.fontNormal
-                                    background: Rectangle {
-                                        radius: 4
-                                        color: Theme.field
+                                    implicitHeight: isWords ? takeField.implicitHeight : spokenTake.implicitHeight
+
+                                    TextArea {
+                                        id: takeField
+                                        anchors.fill: parent
+                                        visible: takeRow.isWords
+                                        text: takeRow.modelData.text
+                                        wrapMode: TextEdit.Wrap
+                                        font.pixelSize: Theme.fontNormal
+                                        leftPadding: 10
+                                        background: Rectangle {
+                                            radius: 4
+                                            color: Theme.field
+                                        }
+                                        onEditingFinished: focusPage.note.setTake(takeRow.index, text)
+                                        Keys.onEscapePressed: focusPage.forceActiveFocus()
                                     }
-                                    onEditingFinished: focusPage.note.setTake(index, text)
-                                    Keys.onEscapePressed: focusPage.forceActiveFocus()
+                                    SpokenTake {
+                                        id: spokenTake
+                                        anchors.fill: parent
+                                        visible: !takeRow.isWords
+                                        place: "focus"
+                                        takeIndex: takeRow.index
+                                        takeState: takeRow.modelData.state
+                                        takeError: takeRow.modelData.error
+                                    }
+                                    Rectangle {
+                                        visible: takeRow.modelData.isLocked
+                                        width: 3
+                                        height: parent.height
+                                        radius: 1
+                                        color: Theme.accent
+                                        ToolTip.visible: lockHover.hovered
+                                        ToolTip.text: "Locked by a checkpoint: a retake keeps it"
+
+                                        HoverHandler {
+                                            id: lockHover
+                                        }
+                                    }
                                 }
                             }
 
@@ -657,6 +705,11 @@ Rectangle {
                         text: focusPage.isDrawing
                               ? "P pen · H highlighter · E eraser · 1–3 size · Ctrl+Z undo · Enter or Esc keep"
                               : "← → ticket · ↑ ↓ image · A approve · C changes · D draw · B blank · N note · Esc grid"
+                                + (studio.voiceNotes.isAvailable
+                                   ? " · " + studio.voiceNotes.talkKeyLabel + " talk · "
+                                     + studio.voiceNotes.retakeKeyLabel + " retake · "
+                                     + studio.voiceNotes.checkpointKeyLabel + " checkpoint"
+                                   : "")
                     }
                 }
             }

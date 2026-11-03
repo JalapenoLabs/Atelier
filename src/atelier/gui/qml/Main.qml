@@ -68,6 +68,8 @@ ApplicationWindow {
     }
 
     Component.onCompleted: {
+        // Voice notes' keys work whichever item has the keyboard, so they are caught on the window itself.
+        studio.voiceNotes.watchKeys(root)
         mainSplit.restoreState(windowSettings.mainSplitState)
         stage.restoreSplit(windowSettings.stageSplitState)
         if (!launchOptions.project && windowSettings.lastProject)

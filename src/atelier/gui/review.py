@@ -22,8 +22,10 @@ tab's tickets in the grid's order and submits its decisions through the board, s
 from __future__ import annotations
 
 import logging
+import shutil
 from collections.abc import Callable
 from datetime import datetime
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +38,7 @@ from atelier.gui.list_model import RowListModel
 from atelier.gui.tasks import TaskRunner
 from atelier.gui.thumbnails import ThumbnailCache
 from atelierd.config import ReviewVerdict
+from atelierd.constants import REVIEW_DIR_NAME
 from atelierd.review import (
     DecisionJob,
     DecisionJobEvent,
@@ -77,6 +80,10 @@ VERDICT_LABELS = {
 }
 if set(VERDICT_LABELS) != set(ReviewVerdict):
     raise RuntimeError("Every review verdict needs a label")
+
+# `<state>/review/bulk-note/` holds what the window makes for the grid's bulk note, which belongs to no one ticket. No
+# ticket is named that, and the daemon only ever prunes a ticket folder's `delivery/`.
+BULK_NOTE_DIR_NAME = "bulk-note"
 
 # A ticket with a job in one of these states already has a decision on its way; the daemon refuses another.
 _BUSY_JOB_STATES = frozenset({DecisionJobState.QUEUED, DecisionJobState.WRITING, DecisionJobState.POSTING})
@@ -132,22 +139,53 @@ class _Hero(BaseModel):
 # ========================================================================================
 
 
+class TakeState(StrEnum):
+    """Where one take of a note is: words, or a voice note on its way to words."""
+
+    WORDS = "words"
+    RECORDING = "recording"
+    TRANSCRIBING = "transcribing"
+    # Transcribing failed; the recording is kept so the take can be transcribed again.
+    FAILED = "failed"
+
+
+class Take(BaseModel):
+    """One take of the reviewer's words. A spoken take keeps its recording, so a retake can delete it."""
+
+    model_config = ConfigDict(frozen=True)
+
+    # Stays the take's own while takes before it come and go, so a late transcription finds it.
+    take_id: int
+    text: str = ""
+    state: TakeState = TakeState.WORDS
+    error: str = ""
+    recording: Path | None = None
+
+
 class DecisionNote(QObject):
     """The reviewer's words for the next decision: takes, verbatim and in order, and the text being typed.
 
-    A typed note is one take, the last. Voice notes arrive as takes through `addTake`, and `removeLastTake` drops the
-    newest one again. Focus mode lets the reviewer correct a take in place (`setTake`) before moving on.
+    A typed note is one take, the last. Voice notes (`voice.py`) put a take in place the moment recording starts, so
+    takes keep the order they were spoken in however long each takes to transcribe; it holds words once transcribed,
+    or the error and its recording when transcribing failed. A **checkpoint** locks the takes so far: a retake
+    (`remove_last_take`) only ever removes a take after it. Focus mode lets the reviewer correct a take in place
+    (`setTake`) before moving on, locked or not.
     """
 
     changed = Signal()
 
     def __init__(self) -> None:
         super().__init__()
-        self._takes: list[str] = []
+        self._takes: list[Take] = []
         self._draft = ""
+        self._locked_count = 0
+        self._next_take_id = 1
 
-    def _get_takes(self) -> list[str]:
-        return list(self._takes)
+    def _get_takes(self) -> list[dict[str, Any]]:
+        return [
+            {"text": take.text, "state": take.state.value, "error": take.error, "isLocked": index < self._locked_count}
+            for index, take in enumerate(self._takes)
+        ]
 
     def _get_draft(self) -> str:
         return self._draft
@@ -161,9 +199,14 @@ class DecisionNote(QObject):
     def _get_is_empty(self) -> bool:
         return not self.all_takes()
 
+    def _get_locked_count(self) -> int:
+        return self._locked_count
+
+    # Each take as QML shows it: `text`, `state` (a `TakeState`), `error` and `isLocked`.
     takes = Property(list, _get_takes, notify=changed)
     draft = Property(str, _get_draft, _set_draft, notify=changed)
     isEmpty = Property(bool, _get_is_empty, notify=changed)
+    lockedCount = Property(int, _get_locked_count, notify=changed)
 
     @Slot(str)
     def addTake(self, text: str) -> None:
@@ -171,8 +214,7 @@ class DecisionNote(QObject):
         if not text.strip():
             logger.debug("[DecisionNote] A take with no words was left out")
             return
-        self._takes.append(text)
-        self.changed.emit()
+        self._append(Take(take_id=self._new_take_id(), text=text))
 
     @Slot(int, str)
     def setTake(self, index: int, text: str) -> None:
@@ -180,21 +222,29 @@ class DecisionNote(QObject):
         if not 0 <= index < len(self._takes):
             logger.debug(f"[DecisionNote] No take {index} of {len(self._takes)} to set")
             return
-        if text == self._takes[index]:
+        take = self._takes[index]
+        if take.state is not TakeState.WORDS:
+            logger.debug(f"[DecisionNote] Take {index} is {take.state.value}, not words to correct")
+            return
+        if text == take.text:
             return
         if text.strip():
-            self._takes[index] = text
+            self._takes[index] = take.model_copy(update={"text": text})
         else:
             del self._takes[index]
+            if index < self._locked_count:
+                self._locked_count -= 1
         self.changed.emit()
 
     @Slot()
     def removeLastTake(self) -> None:
-        """Drop the newest take."""
-        if not self._takes:
-            logger.debug("[DecisionNote] No take to remove")
-            return
-        self._takes.pop()
+        """Drop the newest take after the checkpoint."""
+        self.remove_last_take()
+
+    @Slot()
+    def checkpoint(self) -> None:
+        """Lock the takes so far: a retake can no longer remove them."""
+        self._locked_count = len(self._takes)
         self.changed.emit()
 
     @Slot()
@@ -202,13 +252,89 @@ class DecisionNote(QObject):
         """Start the next decision with no words."""
         self._takes.clear()
         self._draft = ""
+        self._locked_count = 0
         self.changed.emit()
 
+    @property
+    def locked_count(self) -> int:
+        """How many takes, from the first, the checkpoint locks."""
+        return self._locked_count
+
     def all_takes(self) -> tuple[str, ...]:
-        """Every take, the typed text last, as a decision carries them."""
+        """Every take that is words, the typed text last, as a decision carries them."""
+        words = tuple(take.text for take in self._takes if take.state is TakeState.WORDS)
         if self._draft.strip():
-            return (*self._takes, self._draft)
-        return tuple(self._takes)
+            return (*words, self._draft)
+        return words
+
+    def unsettled_takes(self) -> list[Take]:
+        """The spoken takes not yet words: still recording or transcribing, or failed to transcribe."""
+        return [take for take in self._takes if take.state is not TakeState.WORDS]
+
+    def remove_last_take(self) -> Take | None:
+        """Drop the newest take after the checkpoint and return it, or None when there is none to drop."""
+        if len(self._takes) <= self._locked_count:
+            logger.debug(f"[DecisionNote] No take after the checkpoint to remove ({self._locked_count} locked)")
+            return None
+        removed = self._takes.pop()
+        self.changed.emit()
+        return removed
+
+    def start_spoken_take(self, recording: Path) -> int:
+        """Put a take in place for a recording that has just started; returns its id."""
+        take_id = self._new_take_id()
+        self._append(Take(take_id=take_id, state=TakeState.RECORDING, recording=recording))
+        return take_id
+
+    def update_spoken_take(self, take_id: int, state: TakeState, text: str = "", error: str = "") -> bool:
+        """Move a spoken take along: transcribing, its words, or the error it failed with.
+
+        Returns False when the take is no longer in the note (retaken, removed, or the note sent with a decision).
+        """
+        index = self._take_index(take_id)
+        if index < 0:
+            logger.debug(f"[DecisionNote] Take {take_id} has left the note")
+            return False
+        self._takes[index] = self._takes[index].model_copy(update={"state": state, "text": text, "error": error})
+        self.changed.emit()
+        return True
+
+    def remove_take(self, take_id: int) -> Take | None:
+        """Drop one take, locked or not, and return it; None when it is not in the note."""
+        index = self._take_index(take_id)
+        if index < 0:
+            logger.debug(f"[DecisionNote] No take {take_id} to remove")
+            return None
+        removed = self._takes.pop(index)
+        if index < self._locked_count:
+            self._locked_count -= 1
+        self.changed.emit()
+        return removed
+
+    def take_at(self, index: int) -> Take | None:
+        """The take at a place in the note, as QML counts them."""
+        if not 0 <= index < len(self._takes):
+            return None
+        return self._takes[index]
+
+    def _append(self, take: Take) -> None:
+        self._takes.append(take)
+        self.changed.emit()
+
+    def _new_take_id(self) -> int:
+        take_id = self._next_take_id
+        self._next_take_id += 1
+        return take_id
+
+    def _take_index(self, take_id: int) -> int:
+        return next((index for index, take in enumerate(self._takes) if take.take_id == take_id), -1)
+
+
+def unsettled_takes_message(unsettled: list[Take]) -> str:
+    """Why a decision waits for its spoken takes, and what to do about it."""
+    if any(take.state is TakeState.FAILED for take in unsettled):
+        return "A take failed to transcribe: retry it, or retake it, before deciding"
+    return "A take is still being recorded or transcribed; decide once it is words"
 
 
 # ========================================================================================
@@ -344,6 +470,11 @@ class ReviewBoard(QObject):
     def state_dir(self) -> Path:
         """The open project's state folder."""
         return self._backend.state_dir
+
+    @property
+    def bulk_draft_folder(self) -> Path:
+        """The folder holding what is made for the grid's bulk note: its voice notes' recordings."""
+        return self._backend.state_dir / REVIEW_DIR_NAME / BULK_NOTE_DIR_NAME
 
     def item(self, ticket: str) -> ReviewItem | None:
         """A ticket's queue item, or None when it is not in the queue."""
@@ -553,6 +684,10 @@ class ReviewBoard(QObject):
         if not ready:
             self._show_message("Nothing to decide: select tickets that have no decision on its way")
             return False
+        unsettled = self.note.unsettled_takes()
+        if unsettled:
+            self._show_message(unsettled_takes_message(unsettled))
+            return False
         if review_verdict is ReviewVerdict.CHANGES and not takes:
             self._show_message("Say what to change before requesting changes")
             return False
@@ -643,6 +778,8 @@ class ReviewBoard(QObject):
 
     def _on_decided(self, jobs: list[DecisionJob], message: str) -> None:
         self.note.clear()
+        # The note's recordings went with it as words; the next bulk note starts with none.
+        shutil.rmtree(self.bulk_draft_folder, ignore_errors=True)
         self._selected -= {job.ticket for job in jobs}
         self._refresh_tiles()
         self.selectionChanged.emit()

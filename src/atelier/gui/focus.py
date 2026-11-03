@@ -13,7 +13,8 @@ of the ticket shown and of the next two are kept decoded ahead: QML holds each o
 (`prefetchSlots`), and an image that stays wanted keeps its slot, so the stage finds it already decoded in Qt's image
 cache.
 
-A ticket's drawings, and anything else made for its next decision, live in its draft folder,
+A ticket's drawings and voice notes' recordings (`voice.py`), everything made for its next decision, live in its
+draft folder,
 `<state>/review/<ticket>/draft/<delivery comment>/`. The decision job copies the drawings into its own folder when it
 is queued, so the draft folder is deleted then; a draft made for an earlier delivery is deleted when the ticket opens
 on a newer one.
@@ -33,15 +34,15 @@ from PySide6.QtCore import Property, QObject, QUrl, Signal, Slot
 
 from atelier.gui.list_model import RowListModel
 from atelier.gui.markup import DecisionDrawing
-from atelier.gui.review import DecisionNote, ReviewBoard, delivery_images
+from atelier.gui.review import DecisionNote, ReviewBoard, delivery_images, unsettled_takes_message
 from atelierd.config import ReviewVerdict
 from atelierd.constants import REVIEW_DIR_NAME
 from atelierd.review import DecisionJob, DecisionRequest, ReviewItem, ReviewLink
 
 logger = logging.getLogger(__name__)
 
-# `<state>/review/<ticket>/draft/` holds what the window makes for a ticket's next decision: its drawings now, and the
-# reviewer's recordings once voice notes arrive.
+# `<state>/review/<ticket>/draft/` holds what the window makes for a ticket's next decision: its drawings and the
+# recordings of its voice notes.
 DRAFT_DIR_NAME = "draft"
 # How many tickets after the one shown have their images decoded ahead.
 PREFETCH_TICKETS = 2
@@ -256,9 +257,14 @@ class ReviewFocus(QObject):
     prefetchSlotCount = Property(int, _get_prefetch_slot_count, constant=True)
 
     @property
+    def shown_ticket(self) -> str:
+        """The ticket focus mode shows; empty while the grid shows."""
+        return self._ticket
+
+    @property
     def current_note(self) -> DecisionNote:
-        """The shown ticket's note: where its typed words are, and where a spoken take is added (`addTake`)."""
-        return self._note(self._ticket)
+        """The shown ticket's note: where its typed words are, and where its spoken takes go."""
+        return self.note_for(self._ticket)
 
     def draft_folder(self, ticket: str) -> Path:
         """The folder holding what is made for a ticket's next decision, for its current delivery."""
@@ -348,7 +354,12 @@ class ReviewFocus(QObject):
         if self._board.is_busy(ticket):
             self._show_message(f"{ticket} already has a decision on its way")
             return
-        takes = self._note(ticket).all_takes()
+        note = self.note_for(ticket)
+        unsettled = note.unsettled_takes()
+        if unsettled:
+            self._show_message(f"{ticket}: {unsettled_takes_message(unsettled)}")
+            return
+        takes = note.all_takes()
         drawings = tuple(self.drawing_paths(ticket))
         if verdict is ReviewVerdict.CHANGES and not (takes or drawings):
             self._show_message("Say or draw what should change, then finish with changes")
@@ -367,7 +378,7 @@ class ReviewFocus(QObject):
 
     def _on_queued(self, ticket: str, verdict_words: str, jobs: list[DecisionJob]) -> None:
         """The daemon has the decision and its own copies of the drawings: start the ticket's next decision afresh."""
-        self._note(ticket).clear()
+        self.note_for(ticket).clear()
         shutil.rmtree(self.draft_folder(ticket), ignore_errors=True)
         if ticket == self._ticket:
             self._refresh_drawings()
@@ -543,7 +554,8 @@ class ReviewFocus(QObject):
             return None
         return self._entries[self._stage_index]
 
-    def _note(self, ticket: str) -> DecisionNote:
+    def note_for(self, ticket: str) -> DecisionNote:
+        """A ticket's own note, kept while the reviewer moves back and forth until its decision is queued."""
         if ticket not in self._notes:
             self._notes[ticket] = DecisionNote()
         return self._notes[ticket]
