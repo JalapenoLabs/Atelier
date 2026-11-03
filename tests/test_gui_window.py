@@ -20,7 +20,7 @@ from atelier.gui.studio import DaemonState, Studio
 from atelier.gui.tasks import TaskRunner
 
 # The fixture project's images are empty files, so decoding them warns; that is about the data, not the QML.
-_DATA_WARNING = "QQuickImage: Error decoding"
+_DATA_WARNING = "Error decoding: "
 
 
 def test_every_qml_file_loads_without_errors(
@@ -79,6 +79,13 @@ def test_every_qml_file_loads_without_errors(
         wait_until(lambda: studio.review.property("ticketCount") == 3)
         studio.review.note.addTake("Warmer metal")
         studio.review.openTicket(0)
+        qt_application.processEvents()
+        # Focus mode with a sketch open on a blank canvas, then kept with the ticket.
+        studio.focus.drawOnBlank()
+        studio.focus.drawing.addStroke("highlighter", [[0.1, 0.1], [0.6, 0.6]])
+        qt_application.processEvents()
+        studio.focus.finishDrawing()
+        studio.focus.showEntry(1)
         qt_application.processEvents()
         studio.review.closeFocus()
         qt_application.processEvents()

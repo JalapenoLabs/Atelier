@@ -255,10 +255,67 @@ the same ordered takes.
 
 ### Focus mode
 
-Opening a tile sets the board's `focusedTicket` and emits `ReviewBoard.focusRequested(ticket)`, and the page shows
-`ReviewFocusPage.qml` in place of the grid, bound to `focusedTile`. Today that page shows the ticket's id, summary and
-hero image full size; Esc or **Back to the grid** returns (`closeFocus()`), with the cursor on the ticket opened. Focus
-mode's stage, markup and notes are on the roadmap for this page.
+Opening a tile reviews its ticket alone, large, as fast as the reviewer can think. The board's `focusedTicket` is the
+ticket shown; the page is `ReviewFocusPage.qml` over `atelier.gui.focus.ReviewFocus` (`studio.reviewFocus`).
+
+```
+┌ [Back to the grid]  WAY-60  [Art] Carbine     Changes · Queued   1 of 24  [Approve] [Finish with changes] ┐
+│ (while drawing: Pen Highlighter Eraser Arrow Box · colours · S M L · Undo Redo Clear   [Discard] [Keep]) │
+│ ┌ hero.png 1600 × 1200 ──────────────────────────────────────────┐ │ Notes                  2 takes │
+│ │                                                                 │ │ [take 1, editable]             │
+│ │   the stage: an image, the 3D view, a sound, or a drawing       │ │ [take 2, editable]             │
+│ │                                                                 │ │ [the note being typed]         │
+│ └─────────────────────────────────────────────────────────────────┘ │ Drawings  [▣ ×] [▣ ×]          │
+│ [hero] [compare] [detail] [3D] [Sound] [File]                         │ The delivery says …            │
+└───────────────────────────────────────────────────────────────────────┴───────────────────────────────┘
+```
+
+- **The stage** shows the latest delivery's images, the hero (its first image, as on the tile) first, then compare
+  sheets (an image whose name says `compare`), then the rest; then the 3D view of the source the ticket links to;
+  then its sounds, with a play button; then any other file by name. The filmstrip under it lists them all. The 3D
+  view is the studio's own viewport state: showing it selects the linked source on the first export the ticket file
+  names, so it loads, converts and caches exactly as in the Studio.
+- **The note** beside the stage is the ticket's own `DecisionNote`, kept per ticket while the reviewer moves back and
+  forth: the takes in order, each editable in place, and the field being typed, which is the last take. General
+  notes ("overall", "for all the weapons") stay in the words; the decision job splits them out (see `review.md`).
+  The panel also lists the drawings the decision will carry, each removable, and the delivery comment's own words.
+- **Moving on never waits.** A and C submit the decision through the board (`ReviewBoard.submit`, one
+  `review.decide` in the background) and open the next ticket of the tab with no decision on its way at once,
+  wrapping around to the start; with none left, the grid comes back. The decided ticket counts as busy from that
+  moment, so it is never decided twice, and its badge follows its job. Once the daemon has queued the job, the
+  ticket's note is cleared and its draft folder deleted. A refused decision keeps both and says why in the status.
+- **Ahead of the reviewer**, the images of the ticket shown and the next two are decoded by invisible images, a fixed
+  set of slots (`prefetchSlots`) in which an image keeps its slot as long as it is wanted, so stepping on never lets
+  go of an image about to be shown and the stage finds it in Qt's image cache. The filmstrip shows those same
+  images, so nothing is decoded twice.
+
+| Input                     | Does                                                                              |
+|---------------------------|-----------------------------------------------------------------------------------|
+| Left, Right               | The previous and next ticket of the tab                                            |
+| Up, Down, a filmstrip click | The previous and next thing on the stage, wrapping around                       |
+| A, **Approve**            | Approve, with the note and drawings if there are any, and open the next ticket     |
+| C, **Finish with changes** | Request changes with the note and drawings, and open the next ticket; with neither, the note's field takes the keyboard |
+| D                         | Draw on the image shown, or on a frame frozen from the 3D view; D, Enter or Esc keeps the drawing |
+| B                         | Sketch on a blank canvas                                                           |
+| N                         | Write in the note; Esc gives the keys back to the page                              |
+| Space                     | Play or pause the sound shown                                                      |
+| Esc                       | Keep an open drawing; otherwise back to the grid, the cursor on this ticket        |
+
+While a drawing is open: P pen, H highlighter, E eraser, 1 to 3 the line size, Ctrl+Z and Ctrl+Shift+Z undo and redo.
+A drawing opens on the pen. Moving to another ticket or entry, deciding, or going back to the grid keeps a drawing in
+progress first, so nothing drawn is lost; only **Discard** drops one.
+
+**Drawings** use the markup editor's drawing layer (`gui/markup.py`'s `Drawing`, `DrawingSurface.qml` and
+`DrawingTools.qml`; see `workers.md`): pen, highlighter, eraser, arrow and box, six colours, three sizes, undo and
+redo. A blank canvas is a 1920 × 1080 white sheet that starts in ink. Keeping a drawing flattens it onto its image at
+full resolution and writes it as `drawing-<n>.png` into the ticket's **draft folder**,
+`<state>/review/<ticket>/draft/<delivery comment id>/`, which holds what the window makes for the ticket's next
+decision. The decision carries those files (`DecisionRequest.drawings`), and the daemon copies them into the job's own
+folder. A draft made for an earlier delivery is deleted when the ticket opens on a newer one.
+
+Voice notes are on the roadmap (#42): each transcribed recording becomes a take of the shown ticket's note through
+`ReviewFocus.current_note.addTake`, the recordings go into `ReviewFocus.draft_folder(ticket)`, and the recording
+indicator sits in the note panel's header (`focusNotesHeader`).
 
 ## Between the window and the core
 
@@ -275,8 +332,9 @@ the window keeps its review thumbnails. `RpcBackend` implements it over the daem
 
 Above it, `atelier.gui.studio.Studio` is the view-model QML binds to (the daemon's state, the selection, the filter,
 the tree's open rows and the row the keyboard is on, the load path, the staged revision and compare, the approvals
-list), with `gui/chat.py` (the selected source's worker and chat), `gui/markup.py` (the markup editor, and flattening
-markup onto its image) and `gui/review.py` (the Review mode's `ReviewBoard` and its `DecisionNote`) beside it, and
+list), with `gui/chat.py` (the selected source's worker and chat), `gui/markup.py` (the drawing layer, the markup
+editor, focus mode's drawings, and flattening markup onto its image), `gui/review.py` (the Review mode's
+`ReviewBoard` and its `DecisionNote`) and `gui/focus.py` (focus mode, `ReviewFocus`) beside it, and
 plain functions build the tree (`gui/tree.py`), the gallery groups (`gui/gallery.py`) and the filmstrip rows
 (`gui/revisions.py`). Backend calls run off the UI thread through `gui/tasks.py`: catalog work in order on one
 thread, conversions and review thumbnails (`gui/thumbnails.py`) on pools of their own. Show in Blender is the
@@ -302,5 +360,7 @@ hyprctl eval "hl.exec_cmd('<command>', { workspace = 'special:atelier silent', f
 The tests run on `offscreen` without a display: the view-model against a fake backend, the tree and gallery
 functions, the camera's math and the mouse and keys driving it (`tests/test_gui_camera.py`), the review grid's tiles,
 thumbnails, selection and decisions, with its page driven by real keys and mouse events (`tests/test_gui_review.py`;
-on `offscreen` a shown window renders 2D frames, though nothing appears on screen), and a check that every QML file
+on `offscreen` a shown window renders 2D frames, though nothing appears on screen), focus mode's stage, moving on,
+decisions, drawings and flattening, with its page drawn on with the mouse and driven by keys
+(`tests/test_gui_focus.py`), and a check that every QML file
 loads without a warning against a real daemon run in the test process.

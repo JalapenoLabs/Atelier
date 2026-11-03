@@ -144,11 +144,20 @@ class Approval(BaseModel):
 
 
 class StrokeTool(StrEnum):
-    """A markup stroke's shape."""
+    """A markup stroke's kind.
+
+    A highlighter is a wide, translucent pen. An eraser rubs out the marks under its path, never the image beneath them.
+    """
 
     PEN = "pen"
+    HIGHLIGHTER = "highlighter"
+    ERASER = "eraser"
     ARROW = "arrow"
     BOX = "box"
+
+
+# A stroke's width unless it names one: a fraction of the image's longer side, so marks look the same at any size.
+DEFAULT_STROKE_WIDTH = 0.005
 
 
 class Stroke(BaseModel):
@@ -157,9 +166,15 @@ class Stroke(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     tool: StrokeTool
-    color: str = Field(description="A `#rrggbb` colour.")
+    color: str = Field(description="A `#rrggbb` colour; an eraser's is ignored.")
     points: tuple[tuple[float, float], ...] = Field(
-        description="A pen's path, or an arrow's or box's two corners: from where the drag started to where it ended.",
+        description="A pen's, highlighter's or eraser's path, or an arrow's or box's two corners: from where the drag "
+        "started to where it ended.",
+    )
+    width: float = Field(
+        default=DEFAULT_STROKE_WIDTH,
+        gt=0,
+        description="The line's width, as a fraction of the image's longer side.",
     )
 
 

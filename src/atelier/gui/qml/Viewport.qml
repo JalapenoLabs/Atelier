@@ -288,6 +288,17 @@ Item {
         studio.saveBookmark(name, target.x, target.y, target.z, viewCamera.yaw, viewCamera.pitch, viewCamera.distance)
     }
 
+    // Freeze the 3D view as it is into a PNG at `framePath`, then call `onSaved()`. Review focus mode draws on it.
+    function freezeFrame(framePath, onSaved) {
+        view.grabToImage(result => {
+            if (!result.saveToFile(framePath)) {
+                console.warn("Could not save the viewport frame to " + framePath)
+                return
+            }
+            onSaved()
+        })
+    }
+
     // Freeze the 3D view as it is, camera recorded, and open it in the markup editor.
     function markUpFrame() {
         const framePath = studio.markupEditor.newFramePath()
@@ -296,11 +307,7 @@ Item {
         const pitch = viewCamera.pitch
         const distance = viewCamera.distance
         const label = studio.selectedName + " viewport frame"
-        view.grabToImage(result => {
-            if (!result.saveToFile(framePath)) {
-                console.warn("Could not save the viewport frame to " + framePath)
-                return
-            }
+        freezeFrame(framePath, () => {
             studio.markupEditor.openFrame(framePath, label, target.x, target.y, target.z, yaw, pitch, distance)
         })
     }

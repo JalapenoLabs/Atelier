@@ -15,7 +15,8 @@ Each tile shows its ticket's hero image: the first image of the latest delivery 
 (`thumbnails.py`), once per delivery, and fill their tiles as they arrive.
 
 Opening a tile (Enter, a double click) asks for focus mode on its ticket through `focusRequested`; the window shows
-the focused ticket on its own page until the reviewer goes back to the grid.
+the focused ticket on its own page (`focus.py`) until the reviewer goes back to the grid. Focus mode walks the current
+tab's tickets in the grid's order and submits its decisions through the board, so the grid badges them the same way.
 """
 
 from __future__ import annotations
@@ -40,6 +41,8 @@ from atelierd.review import (
     DecisionJobEvent,
     DecisionJobState,
     DecisionRequest,
+    ReviewAttachment,
+    ReviewDelivery,
     ReviewEvent,
     ReviewEventKind,
     ReviewItem,
@@ -133,7 +136,7 @@ class DecisionNote(QObject):
     """The reviewer's words for the next decision: takes, verbatim and in order, and the text being typed.
 
     A typed note is one take, the last. Voice notes arrive as takes through `addTake`, and `removeLastTake` drops the
-    newest one again.
+    newest one again. Focus mode lets the reviewer correct a take in place (`setTake`) before moving on.
     """
 
     changed = Signal()
@@ -169,6 +172,20 @@ class DecisionNote(QObject):
             logger.debug("[DecisionNote] A take with no words was left out")
             return
         self._takes.append(text)
+        self.changed.emit()
+
+    @Slot(int, str)
+    def setTake(self, index: int, text: str) -> None:
+        """Put the reviewer's corrected words in place of one take; with no words left, the take goes."""
+        if not 0 <= index < len(self._takes):
+            logger.debug(f"[DecisionNote] No take {index} of {len(self._takes)} to set")
+            return
+        if text == self._takes[index]:
+            return
+        if text.strip():
+            self._takes[index] = text
+        else:
+            del self._takes[index]
         self.changed.emit()
 
     @Slot()
@@ -240,6 +257,8 @@ class ReviewBoard(QObject):
         # The selection a drag box started from; None when no box is being dragged.
         self._box_base: set[str] | None = None
         self._focused = ""
+        # Tickets whose decision has been submitted but not yet answered with its job.
+        self._submitting: set[str] = set()
         self._is_refreshing = False
 
         self._tab_rows = RowListModel(ReviewTabRow)
@@ -311,6 +330,39 @@ class ReviewBoard(QObject):
         """The selected tickets, in the grid's order."""
         return [tile.ticket for tile in self._tiles() if tile.ticket in self._selected]
 
+    @property
+    def focused_ticket(self) -> str:
+        """The ticket open in focus mode; empty while the grid shows."""
+        return self._focused
+
+    @property
+    def tab_tickets(self) -> list[str]:
+        """The current tab's tickets, in the grid's order: the order focus mode walks them in."""
+        return self._tab_tickets()
+
+    @property
+    def state_dir(self) -> Path:
+        """The open project's state folder."""
+        return self._backend.state_dir
+
+    def item(self, ticket: str) -> ReviewItem | None:
+        """A ticket's queue item, or None when it is not in the queue."""
+        return self._items.get(ticket)
+
+    def tile(self, ticket: str) -> ReviewTile | None:
+        """A ticket's tile in the current tab, or None when the tab does not show it."""
+        position = self._tile_index(ticket)
+        if position < 0:
+            return None
+        return self._tiles()[position]
+
+    def is_busy(self, ticket: str) -> bool:
+        """Whether a ticket has a decision on its way: submitted, queued, being written or being posted."""
+        if ticket in self._submitting:
+            return True
+        job = self._jobs.get(ticket)
+        return job is not None and job.state in _BUSY_JOB_STATES
+
     # ####################### #
     #   FOLLOWING THE QUEUE   #
     # ####################### #
@@ -329,6 +381,7 @@ class ReviewBoard(QObject):
         self._cursor = ""
         self._anchor = ""
         self._focused = ""
+        self._submitting = set()
         self.note.clear()
         self._rebuild()
         self._run_work(
@@ -494,7 +547,7 @@ class ReviewBoard(QObject):
         """
         review_verdict = ReviewVerdict(verdict)
         tickets = self._decision_tickets()
-        busy = [ticket for ticket in tickets if self._is_busy(ticket)]
+        busy = [ticket for ticket in tickets if self.is_busy(ticket)]
         ready = [ticket for ticket in tickets if ticket not in busy]
         takes = self.note.all_takes()
         if not ready:
@@ -507,11 +560,37 @@ class ReviewBoard(QObject):
         request = DecisionRequest(tickets=tuple(ready), verdict=review_verdict, takes=takes)
         skipped = f"; {len(busy)} already deciding, left out" if busy else ""
         count = f"{len(ready)} tickets" if len(ready) > 1 else ready[0]
-        self._run_work(
-            lambda: self._backend.decide(request),
+        self.submit(
+            request,
             lambda jobs: self._on_decided(jobs, f"{VERDICT_LABELS[review_verdict]}: {count} queued{skipped}"),
         )
         return True
+
+    def submit(
+        self,
+        request: DecisionRequest,
+        on_queued: Callable[[list[DecisionJob]], None],
+        on_failed: Callable[[Exception], None] | None = None,
+    ) -> None:
+        """Send a decision to the daemon in the background and badge its tickets once their jobs are queued.
+
+        The tickets count as busy from now on, so nothing decides them twice while the daemon answers. A refusal is
+        shown as the status message, and `on_failed` hears it.
+        """
+        self._submitting |= set(request.tickets)
+
+        def queued(jobs: list[DecisionJob]) -> None:
+            self._submitting -= set(request.tickets)
+            self._take_jobs(jobs)
+            self._refresh_tiles()
+            on_queued(jobs)
+
+        def failed(error: Exception) -> None:
+            self._submitting -= set(request.tickets)
+            if on_failed is not None:
+                on_failed(error)
+
+        self._run_work(lambda: self._backend.decide(request), queued, failed)
 
     @Slot(str)
     def retryJob(self, ticket: str) -> None:
@@ -545,6 +624,17 @@ class ReviewBoard(QObject):
         """Open the tile under the cursor in focus mode (Enter)."""
         self.openTicket(self._tile_index(self._cursor))
 
+    def focus_ticket(self, ticket: str) -> None:
+        """Show another ticket of the current tab in focus mode, keeping the grid's cursor on it."""
+        if ticket not in self._tab_tickets():
+            logger.debug(f"[Review] {ticket} is not in the {self._current_tab} tab to focus on")
+            return
+        self._set_cursor(ticket)
+        if ticket == self._focused:
+            return
+        self._focused = ticket
+        self.focusChanged.emit()
+
     @Slot()
     def closeFocus(self) -> None:
         """Go back to the grid."""
@@ -552,7 +642,6 @@ class ReviewBoard(QObject):
         self.focusChanged.emit()
 
     def _on_decided(self, jobs: list[DecisionJob], message: str) -> None:
-        self._take_jobs(jobs)
         self.note.clear()
         self._selected -= {job.ticket for job in jobs}
         self._refresh_tiles()
@@ -664,10 +753,6 @@ class ReviewBoard(QObject):
             return [self._cursor]
         return []
 
-    def _is_busy(self, ticket: str) -> bool:
-        job = self._jobs.get(ticket)
-        return job is not None and job.state in _BUSY_JOB_STATES
-
     # -----------------------------------------------------------------------------
     # Heroes
     # -----------------------------------------------------------------------------
@@ -702,13 +787,9 @@ class ReviewBoard(QObject):
         """Blocking: the hero image of a ticket and its thumbnail."""
         delivery = item.delivery
         if delivery is not None:
-            images = [
-                attachment.path
-                for attachment in delivery.attachments
-                if attachment.mime_type.startswith("image/") or attachment.path.suffix.lower() in _IMAGE_SUFFIXES
-            ]
+            images = delivery_images(delivery)
             if images:
-                return _thumbnailed(basis, images[0], thumbnails)
+                return _thumbnailed(basis, images[0].path, thumbnails)
         if item.link is not None:
             hero_path = _standard_hero(self._backend.get_history(item.link.source), item.link.exports)
             if hero_path is not None:
@@ -734,6 +815,15 @@ class ReviewBoard(QObject):
 # -----------------------------------------------------------------------------
 # Small pure helpers
 # -----------------------------------------------------------------------------
+
+
+def delivery_images(delivery: ReviewDelivery) -> list[ReviewAttachment]:
+    """A delivery's images in the order it lists them, the first being its hero: by type, or by name without one."""
+    return [
+        attachment
+        for attachment in delivery.attachments
+        if attachment.mime_type.startswith("image/") or attachment.path.suffix.lower() in _IMAGE_SUFFIXES
+    ]
 
 
 def _hero_basis(item: ReviewItem) -> str:

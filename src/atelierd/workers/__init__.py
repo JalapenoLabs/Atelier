@@ -3,6 +3,7 @@
 from atelierd.workers.approvals import ApprovalBroker
 from atelierd.workers.feedback import FeedbackService
 from atelierd.workers.models import (
+    DEFAULT_STROKE_WIDTH,
     Approval,
     ApprovalEvent,
     ApprovalStatus,
@@ -27,6 +28,7 @@ from atelierd.workers.process import BlenderLauncher, launch_background_blender
 from atelierd.workers.worker import Worker, WorkerBusyError, WorkerSettings
 
 __all__ = [
+    "DEFAULT_STROKE_WIDTH",
     "Approval",
     "ApprovalBroker",
     "ApprovalEvent",

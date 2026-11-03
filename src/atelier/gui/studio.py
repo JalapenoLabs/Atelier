@@ -16,7 +16,8 @@ Compare puts two revisions side by side, as standard renders or as two models.
 
 Workers follow `docs/workers.md`: `chat` is the selected source's worker and chat, `markup` the drawing layer that
 sends feedback, and the approvals list holds every project's escalated tool calls for the header's badge. `review` is
-the Review mode's grid over the project's review queue (`gui/review.py`, `docs/review.md`). The window
+the Review mode's grid over the project's review queue (`gui/review.py`, `docs/review.md`), and `focus` its focus mode
+on one ticket (`gui/focus.py`), which shows a ticket's linked source by selecting it here. The window
 reaches the core only through the daemon; until it is connected (or when it goes away) `daemonState` says so and the
 window offers to start one.
 """
@@ -34,6 +35,7 @@ from PySide6.QtCore import Property, QObject, QSettings, QUrl, Signal, Slot
 
 from atelier.gui.backend import DaemonDisconnected, StudioBackend, StudioEvent
 from atelier.gui.chat import Chat
+from atelier.gui.focus import ReviewFocus
 from atelier.gui.gallery import group_renders_by_stem
 from atelier.gui.list_model import RowListModel
 from atelier.gui.markup import MarkupEditor, MarkupTarget
@@ -51,7 +53,7 @@ from atelier.gui.tasks import TaskRunner
 from atelier.gui.tree import RowKind, SourceRow, TreeExpansion, build_source_rows
 from atelierd.catalog import CameraBookmark, Reference, ScanResult, Source, SourceStatus
 from atelierd.exports import ConvertedExport
-from atelierd.review import DecisionJobEvent, ReviewEvent
+from atelierd.review import DecisionJobEvent, ReviewEvent, ReviewLink
 from atelierd.revisions import (
     STANDARD_VIEWS,
     FileKind,
@@ -352,6 +354,7 @@ class Studio(QObject):
         # The markup editor takes the stage while it is open.
         self.markup.changed.connect(self.stageReadyChanged)
         self.review = ReviewBoard(backend, tasks, self._run_catalog, self._show_message)
+        self.focus = ReviewFocus(self.review, self._show_message, self._show_linked_model)
 
         self._coreEventArrived.connect(self._on_core_event)
 
@@ -491,6 +494,9 @@ class Studio(QObject):
     def _get_review(self) -> QObject:
         return self.review
 
+    def _get_focus(self) -> QObject:
+        return self.focus
+
     def _get_approval_rows(self) -> QObject:
         return self._approval_rows
 
@@ -562,6 +568,7 @@ class Studio(QObject):
     chatModel = Property(QObject, _get_chat, constant=True)
     markupEditor = Property(QObject, _get_markup, constant=True)
     reviewBoard = Property(QObject, _get_review, constant=True)
+    reviewFocus = Property(QObject, _get_focus, constant=True)
     approvalRows = Property(QObject, _get_approval_rows, constant=True)
     approvalCount = Property(int, _get_approval_count, notify=approvalsChanged)
     daemonState = Property(str, _get_daemon_state, notify=daemonChanged)
@@ -1517,6 +1524,17 @@ class Studio(QObject):
     # ####################### #
     #         MARKUP          #
     # ####################### #
+
+    def _show_linked_model(self, link: ReviewLink) -> None:
+        """Select a review ticket's linked source, on the first export the ticket names, for focus mode's 3D view."""
+        export = link.exports[0] if link.exports else ""
+        if link.source != self._selected_source:
+            self._select_source(link.source, export)
+            return
+        if export in self.export_paths:
+            self.selectExport(export)
+            return
+        self.showModel()
 
     def _markup_target(self) -> MarkupTarget | None:
         """What the stage shows, for a capture about to be marked up."""

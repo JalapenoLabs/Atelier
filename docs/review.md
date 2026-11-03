@@ -104,7 +104,8 @@ to_stage = "Backlog"
   untrusted data: names are made safe (no path separators or leading dots; a repeated name gets the attachment id
   added), and files are only ever shown. A file already there at the right size is not downloaded again. A failed
   download is reported in the delivery's `error`, and the rest still arrive. Downloads of a superseded round, or of
-  a ticket that left the queue, are deleted on the next refresh; the rest of `<state>/review/<ticket>/` is left alone.
+  a ticket that left the queue, are deleted on the next refresh; the rest of `<state>/review/<ticket>/` (decision
+  jobs' drawings, the window's draft folder) is left alone.
 - **Linking to a source**: a ticket file names the ticket an asset was built for. A JSON file names it in a top-level
   `ticket` field and may list its meshes in `subjects[].meshes`; any other file names it on its first non-empty line
   as `Ticket: WAY-60`. The source is the one in the nearest folder above the file that holds any (Waystead's
@@ -227,8 +228,16 @@ ticket with its latest delivery's hero image and its decision job's state, a tab
 the keyboard and mouse. Approving or requesting changes on the selection is one `review.decide` with every selected
 ticket and one set of takes; tickets with a decision already on its way are left out of it rather than failing it.
 The grid reads `review.queue` again on every queue event and follows `decision_job` events to badge its tiles, and a
-ticket leaves it on the `decided` event, when its decision has posted. Opening a tile goes to focus mode on that
-ticket. The window never writes to the tracker itself.
+ticket leaves it on the `decided` event, when its decision has posted. The window never writes to the tracker itself.
+
+Opening a tile goes to **focus mode** on that ticket: its delivery's images, its linked source's 3D view and its
+sounds on a stage, the ticket's own note beside it, and drawings on any image or on a blank canvas. Each decision there
+is one `review.decide` for one ticket, with its takes in order (general notes such as "for all the weapons" left in
+the words, for the job to split) and its drawings, and the next ticket opens without waiting for the answer. The
+window keeps what it makes for a ticket's next decision in its **draft folder**,
+`<state>/review/<ticket>/draft/<delivery comment id>/`: the drawings as `drawing-<n>.png`, which the decision names
+and the daemon copies into the job's folder. The window deletes the draft folder once the job is queued, and a draft
+made for an earlier delivery when the ticket opens on a newer one. See `viewer.md` for the keys.
 
 ## Front doors
 

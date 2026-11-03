@@ -121,12 +121,16 @@ long as you take.
 Feedback is drawn, not just typed. **Mark up** on a render shown full size, or on the 3D viewport's toolbar (which
 freezes the frame and records its camera), opens the stage's markup editor:
 
-- **Strokes**: pen, arrow and box, in four colours, with undo and clear.
+- **Strokes**: pen, highlighter, eraser, arrow and box, in six colours and three sizes, with undo, redo (Ctrl+Z,
+  Ctrl+Shift+Z) and clear. A highlighter is a wide translucent pen; the eraser rubs out marks, never the image.
 - **Pins**: numbered markers, each with its own note.
 - **Send to worker**, with an optional note of your own.
 
-Marks are kept in coordinates from 0 to 1 across the image, so the editor's canvas and the flattened PNG agree at any
-size. Sending flattens the strokes and pins onto the capture at its full resolution (in the window, with Qt), and
+Marks are kept in coordinates from 0 to 1 across the image, each stroke with its width as a fraction of the image's
+longer side, so the editor's canvas and the flattened PNG agree at any size. The drawing layer (`Drawing` in
+`gui/markup.py`, `DrawingSurface.qml`, `DrawingTools.qml`) is shared with review focus mode's drawings (`viewer.md`).
+Flattening paints the strokes on a transparent layer, where an eraser clears what it covers, and lays it over the
+capture, as the editor's canvas does over the image. Sending flattens the strokes and pins onto the capture at its full resolution (in the window, with Qt), and
 the daemon stores the feedback in `<state>/feedback/<source>/<id>/` (`<source>` is the source's path without
 `.blend`): `capture.png`, `annotated.png` and `markup.json`. `state.db` (`feedback`) records the revision and export
 it critiques, its pins and a frozen frame's camera. The worker's prompt names the annotated image's path, lists the
