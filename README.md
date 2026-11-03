@@ -32,7 +32,7 @@ daemon as a systemd user service instead, `uv run atelierd install` writes the u
 
 The daemon converts exports and renders with Blender, so `blender` must be on `PATH` (or named by `ATELIER_BLENDER`).
 Workers also need `claude` (Claude Code, logged in) and `blender-mcp` with the Blender Lab MCP extension
-(`ATELIER_CLAUDE`, `ATELIER_BLENDER_MCP` override them). To look at a project without writing anything into it, run
+(`ATELIER_CLAUDE`, `ATELIER_BLENDER_MCP` override them). The review mode's sound playback and voice notes need PulseAudio's client library (`libpulse`, which PipeWire's PulseAudio layer provides) and `pw-record`; voice notes also need a transcriber (`voxtype` by default, see [review.md](docs/review.md)). To look at a project without writing anything into it, run
 the daemon with `--state-root <folder outside it>` (for `scan`, `--state-dir`).
 
 Checks, as CI runs them: `uv run ruff format --check`, `uv run ruff check`, `uv run mypy src tests`, `uv run pytest`.
