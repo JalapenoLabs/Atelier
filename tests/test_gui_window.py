@@ -115,3 +115,8 @@ class TestCommandLine:
     def test_scan_still_needs_no_qt(self, project_root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("XDG_DATA_HOME", str(project_root.parent / "data"))
         assert cli.main(["scan", str(project_root)]) == 0
+
+
+def test_gui_tests_never_reach_the_desktop(qt_application: QGuiApplication) -> None:
+    # A desktop session exports its own platform (`wayland;xcb` on Omarchy), which must not put windows on its screen.
+    assert qt_application.platformName() == "offscreen"

@@ -63,8 +63,11 @@ def qt_application() -> QGuiApplication:
 
     `offscreen` has no 3D graphics API, so Qt Quick 3D renders nothing there; GUI tests cover the view-model and
     that the QML loads, not pixels.
+
+    The platform is forced, not defaulted: a desktop session exports its own `QT_QPA_PLATFORM`, and honouring it would
+    open every test's window on the developer's screen and let their focus and mouse decide the results.
     """
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    os.environ["QT_QPA_PLATFORM"] = "offscreen"
     existing = QGuiApplication.instance()
     if isinstance(existing, QGuiApplication):
         return existing
