@@ -27,6 +27,9 @@ Atelier finds sources by convention, with no config needed for the common layout
   nothing below them is a source.
 - A source's files are those in its own folder plus the whole trees of `Export/`, `Exports/`, `Review/` and `Renders/`
   beside it. Other subfolders (`Source/`, `Textures/`, `scripts/`) are not part of it.
+- Those output folders are never walked for sources: a `.blend` in one is output, such as a scratch scene a measuring
+  tool leaves in `Renders/`, and isn't a file of the source either. A folder only named like one, with no `.blend`
+  beside it, is walked like any other.
 - Of those files, every `*.fbx` is an **export**. An image (`png`, `jpg`, `jpeg`, `webp`, `exr`) is a **render** when it
   sits in `Review/` or `Renders/` or is named `*_preview*` or `*_contact_sheet*`; textures beside the exports are not.
 - A folder can hold several kits (CruiseTycoon's `Ship/` holds `DeckKit.blend` and `Hull.blend`). A file named after

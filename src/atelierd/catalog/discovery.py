@@ -2,7 +2,8 @@
 
 The conventions are the design of record in `docs/catalog.md`:
 
-- every `*.blend` under the configured roots is a source, outside `_`-prefixed folders and `__pycache__`;
+- every `*.blend` under the configured roots is a source, outside `_`-prefixed folders, `__pycache__`, and the output
+  folders of a `.blend` beside them;
 - its files are those in its own folder plus the trees of `Export/`, `Exports/`, `Review/` and `Renders/` beside it,
   except, in a folder of several `.blend` files, the files named after one of the others;
 - of those, `*.fbx` files are exports, and images in `Review/` or `Renders/` or named `*_preview*` or
@@ -65,7 +66,7 @@ def discover_sources(project_root: Path, config: AtelierConfig) -> tuple[list[Di
             logger.warning(f"[Discovery] Root '{root}' does not exist under {project_root}, skipping it")
             continue
 
-        for folder, file_names in _walk_files(root_folder):
+        for folder, file_names in _walk_source_folders(root_folder):
             resolved_folder = folder.resolve()
             if resolved_folder in seen_folders:
                 continue
@@ -119,6 +120,21 @@ def _walk_files(top: Path) -> Iterable[tuple[Path, list[str]]]:
         yield Path(folder), file_names
 
 
+def _walk_source_folders(top: Path) -> Iterable[tuple[Path, list[str]]]:
+    """Yield each folder under `top` that can hold sources, with the names of the files directly in it.
+
+    The output folders beside a `.blend` belong to it whole, so a `.blend` in one is output rather than an asset, such
+    as the scratch scene a measuring tool leaves in `Renders/`. A folder that is only named like one, with no `.blend`
+    beside it, is walked like any other.
+    """
+    for folder, folder_names, file_names in os.walk(top):
+        walkable_names = [name for name in folder_names if is_walkable_folder(name)]
+        if any(name.endswith(SOURCE_SUFFIX) for name in file_names):
+            walkable_names = [name for name in walkable_names if name not in OUTPUT_FOLDER_NAMES]
+        folder_names[:] = walkable_names
+        yield Path(folder), file_names
+
+
 def _collect_folder_files(folder: Path, file_names: list[str]) -> list[Path]:
     """Return the conventional files of the sources in `folder`: its own files plus its output folders' trees.
 
@@ -131,7 +147,7 @@ def _collect_folder_files(folder: Path, file_names: list[str]) -> list[Path]:
         if not output_folder.is_dir():
             continue
         for nested_folder, nested_file_names in _walk_files(output_folder):
-            files.extend(nested_folder / name for name in nested_file_names)
+            files.extend(nested_folder / name for name in nested_file_names if SOURCE_SUFFIX not in name)
 
     return files
 

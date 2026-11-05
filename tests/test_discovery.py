@@ -34,6 +34,27 @@ class TestWhatIsASource:
         sources = _discover(project_root)
         assert not any("/_" in path or "__pycache__" in path for path in sources)
 
+    def test_a_blend_in_an_output_folder_is_neither_a_source_nor_a_file(self, project_root: Path) -> None:
+        gate_folder = project_root / "SourceArt" / "Weapons" / "Carbine" / "Renders" / "Gate" / "Carbine"
+        gate_folder.mkdir(parents=True)
+        (gate_folder / "Carbine_gate.blend").touch()
+        (gate_folder / "Carbine_gate.fbx").touch()
+
+        sources = _discover(project_root)
+
+        assert sorted(sources) == sorted([CARBINE, DOG_TAG, CREWMATE, DECK_KIT, HULL, ROOMS, DINING_SPA])
+        carbine_exports = sources[CARBINE].exports
+        assert "SourceArt/Weapons/Carbine/Renders/Gate/Carbine/Carbine_gate.fbx" in carbine_exports
+        assert not any(path.endswith(".blend") for path in carbine_exports)
+
+    def test_a_folder_only_named_like_an_output_can_hold_sources(self, project_root: Path) -> None:
+        # Nothing sits beside this `Review/`, so nothing owns it: the asset inside is a real one.
+        folder = project_root / "SourceArt" / "Review"
+        folder.mkdir()
+        (folder / "Crate.blend").touch()
+
+        assert "SourceArt/Review/Crate.blend" in _discover(project_root)
+
     def test_blender_backups_are_neither_sources_nor_files(self, project_root: Path) -> None:
         carbine = _discover(project_root)[CARBINE]
         all_paths = [carbine.path, *carbine.exports, *carbine.renders]
