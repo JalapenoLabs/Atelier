@@ -1,6 +1,7 @@
 // The review window: a header with the project picker and the mode, over the Studio's three panes (sources, stage,
-// context) or the Review mode's grid of the review queue. Panel sizes, the context tab, the mode and the viewport's
-// display settings are remembered per machine.
+// context) or the Review mode's grid of the review queue. A project opens on its tickets when it has a review queue,
+// and on the Studio when it has none. Panel sizes, the context tab and the viewport's display settings are remembered
+// per machine.
 import QtCore
 import QtQuick
 import QtQuick.Controls
@@ -47,14 +48,11 @@ ApplicationWindow {
     }
 
     // "studio" or "review".
-    property string mode: windowSettings.mode
+    property string mode: "studio"
 
     header: HeaderBar {
         mode: root.mode
-        onModeRequested: newMode => {
-            root.mode = newMode
-            windowSettings.mode = newMode
-        }
+        onModeRequested: newMode => root.mode = newMode
     }
 
     Settings {
@@ -64,7 +62,6 @@ ApplicationWindow {
         property var stageSplitState
         property int contextTab: 0
         property string lastProject: ""
-        property string mode: "studio"
     }
 
     Component.onCompleted: {
@@ -85,6 +82,15 @@ ApplicationWindow {
         target: studio
         function onProjectChanged() {
             windowSettings.lastProject = studio.projectName
+        }
+    }
+
+    Connections {
+        target: studio.reviewBoard
+        function onProjectQueueKnown(hasQueue) {
+            // A screenshot renders the Studio's stage, whatever the project's queue holds.
+            if (!launchOptions.isScreenshot)
+                root.mode = hasQueue ? "review" : "studio"
         }
     }
 

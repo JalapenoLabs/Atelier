@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 from fake_backend import CARBINE, CARBINE_EXPORT, FakeBackend
 from PySide6.QtCore import QPoint, QPointF, QSettings, Qt, QUrl
-from PySide6.QtGui import QColor, QGuiApplication, QImage, QImageReader
+from PySide6.QtGui import QColor, QDesktopServices, QGuiApplication, QImage, QImageReader
 from PySide6.QtQml import QQmlApplicationEngine, QQmlError
 from PySide6.QtQuick import QQuickItem, QQuickWindow
 from PySide6.QtTest import QTest
@@ -161,6 +161,19 @@ def backend(tmp_path: Path) -> Iterator[FakeBackend]:
 
 
 @pytest.fixture
+def opened_urls(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """The links that would have opened in the browser; nothing does while a test runs."""
+    urls: list[str] = []
+
+    def open_url(url: QUrl) -> bool:
+        urls.append(url.toString())
+        return True
+
+    monkeypatch.setattr(QDesktopServices, "openUrl", open_url)
+    return urls
+
+
+@pytest.fixture
 def studio(backend: FakeBackend, tmp_path: Path, wait_until: WaitUntil) -> Iterator[Studio]:
     studio = Studio(backend, TaskRunner(), QSettings(str(tmp_path / "Atelier.conf"), QSettings.Format.IniFormat))
     studio.connectDaemon()
@@ -248,6 +261,61 @@ class TestTiles:
         assert ThumbnailCache(tmp_path / "thumbnails").thumbnail(broken) is None
 
 
+class TestHeroes:
+    @staticmethod
+    def with_files(backend: FakeBackend, attachments: tuple[ReviewAttachment, ...], link: ReviewLink | None) -> None:
+        """Give WAY-60 a delivery of these files, with a link to the source or none."""
+        queue = backend.review_queue
+        carbine = queue.items[0]
+        assert carbine.delivery is not None
+        delivery = carbine.delivery.model_copy(update={"attachments": attachments})
+        items = (carbine.model_copy(update={"delivery": delivery, "link": link}), *queue.items[1:])
+        backend.review_queue = queue.model_copy(update={"items": items})
+
+    def test_a_tile_shows_the_first_image_as_the_delivery_orders_them(
+        self, studio: Studio, backend: FakeBackend, tmp_path: Path, wait_until: WaitUntil
+    ) -> None:
+        art = make_image(tmp_path / "state" / "art.png", 64, 64)
+        sheet = make_image(tmp_path / "state" / "sheet.png", 64, 64)
+        self.with_files(
+            backend,
+            (
+                ReviewAttachment(name="art.png", path=art, mime_type="image/png"),
+                ReviewAttachment(name="sheet.png", path=sheet, mime_type="image/png", is_reference=True),
+            ),
+            None,
+        )
+        studio.review.refresh()
+        wait_until(lambda: tile(studio.review, "WAY-60").hero_url.endswith("/art.png"))
+
+    def test_a_delivery_of_only_reference_gives_way_to_the_linked_sources_render(
+        self, studio: Studio, backend: FakeBackend, tmp_path: Path, wait_until: WaitUntil
+    ) -> None:
+        sheet = make_image(tmp_path / "state" / "sheet.png", 64, 64)
+        link = ReviewLink(source=CARBINE, exports=(CARBINE_EXPORT,), ticket_file="SourceArt/x/reference.json")
+        attachment = ReviewAttachment(name="sheet.png", path=sheet, mime_type="image/png", is_reference=True)
+        self.with_files(backend, (attachment,), link)
+        studio.review.refresh()
+        wait_until(lambda: tile(studio.review, "WAY-60").hero_url.endswith("/7/hero.png"))
+
+    def test_measuring_material_shows_when_it_is_all_there_is(
+        self, studio: Studio, backend: FakeBackend, tmp_path: Path, wait_until: WaitUntil
+    ) -> None:
+        sheet = make_image(tmp_path / "state" / "sheet.png", 64, 64)
+        attachment = ReviewAttachment(name="sheet.png", path=sheet, mime_type="image/png", is_reference=True)
+        self.with_files(backend, (attachment,), None)
+        studio.review.refresh()
+        wait_until(lambda: tile(studio.review, "WAY-60").hero_url.endswith("/sheet.png"))
+
+    def test_a_tile_says_its_round(self, studio: Studio, backend: FakeBackend, wait_until: WaitUntil) -> None:
+        assert tile(studio.review, "WAY-60").round_label == ""
+        carbine = backend.review_queue.items[0].model_copy(update={"round": 3})
+        items = (carbine, *backend.review_queue.items[1:])
+        backend.review_queue = backend.review_queue.model_copy(update={"items": items})
+        studio.review.refresh()
+        wait_until(lambda: tile(studio.review, "WAY-60").round_label == "Round 3")
+
+
 class TestSelection:
     def test_click_ctrl_click_and_shift_click(self, studio: Studio) -> None:
         board = studio.review
@@ -260,13 +328,77 @@ class TestSelection:
         board.clickTile(0, CONTROL)
         assert board.selected_tickets == ["WAY-62"]
 
-        # A range from the last tile clicked, replacing the selection; with Ctrl, added to it.
+        # A range from the last tile clicked is added to the selection; with Ctrl, taken away from it.
         board.clickTile(1, 0)
         board.clickTile(3, SHIFT)
         assert board.selected_tickets == ["WAY-61", "WAY-62", "WAY-63"]
+        board.clickTile(3, CONTROL | SHIFT)
+        assert board.selected_tickets == []
         board.clickTile(0, 0)
         board.clickTile(1, SHIFT)
         assert [found.is_selected for found in tiles(board)] == [True, True, False, False]
+
+    def test_a_checkbox_toggles_its_tile_and_keeps_the_rest(self, studio: Studio) -> None:
+        board = studio.review
+        board.checkTile(0, 0)
+        board.checkTile(2, 0)
+        assert board.selected_tickets == ["WAY-60", "WAY-62"]
+        board.checkTile(0, 0)
+        assert board.selected_tickets == ["WAY-62"]
+
+        board.checkTile(1, 0)
+        board.checkTile(3, SHIFT)
+        assert board.selected_tickets == ["WAY-61", "WAY-62", "WAY-63"]
+        assert board.property("cursorIndex") == 3
+
+    def test_selection_changes_undo_and_redo(self, studio: Studio) -> None:
+        board = studio.review
+        board.clickTile(0, 0)
+        board.clickTile(1, CONTROL)
+        board.clearSelection()
+
+        board.undoSelection()
+        assert board.selected_tickets == ["WAY-60", "WAY-61"]
+        board.undoSelection()
+        assert board.selected_tickets == ["WAY-60"]
+        board.redoSelection()
+        assert board.selected_tickets == ["WAY-60", "WAY-61"]
+
+        # A new change takes the place of what was undone.
+        board.selectAll()
+        board.redoSelection()
+        assert len(board.selected_tickets) == 4
+
+    def test_a_drag_box_undoes_as_one_change(self, studio: Studio) -> None:
+        board = studio.review
+        board.clickTile(3, 0)
+        board.beginBoxSelection(False)
+        board.updateBoxSelection([0])
+        board.updateBoxSelection([0, 1])
+        board.endBoxSelection()
+        assert board.selected_tickets == ["WAY-60", "WAY-61"]
+
+        board.undoSelection()
+        assert board.selected_tickets == ["WAY-63"]
+
+    def test_undoing_never_brings_back_a_ticket_that_left(
+        self, studio: Studio, backend: FakeBackend, wait_until: WaitUntil
+    ) -> None:
+        board = studio.review
+        board.selectAll()
+        board.clearSelection()
+        tab = backend.review_queue.tabs[0].model_copy(update={"tickets": ("WAY-61", "WAY-62", "WAY-63")})
+        backend.review_queue = backend.review_queue.model_copy(
+            update={
+                "tabs": (tab, *backend.review_queue.tabs[1:]),
+                "items": tuple(item for item in backend.review_queue.items if item.ticket != "WAY-60"),
+            }
+        )
+        board.apply_review_event(ReviewEvent(kind=ReviewEventKind.DECIDED, removed=("WAY-60",)))
+        wait_until(lambda: board.item("WAY-60") is None)
+
+        board.undoSelection()
+        assert board.selected_tickets == ["WAY-61", "WAY-62", "WAY-63"]
 
     def test_keyboard_moves_selects_and_extends(self, studio: Studio) -> None:
         board = studio.review
@@ -434,6 +566,17 @@ class TestDecisions:
         wait_until(lambda: backend.refreshes == 1 and not studio.review.property("isRefreshing"))
 
 
+class TestOpeningInTheTracker:
+    def test_it_opens_the_ticket_on_its_tracker_page(self, studio: Studio, opened_urls: list[str]) -> None:
+        studio.review.moveCursor(1, False)
+        studio.review.openCursorInTracker()
+        assert opened_urls == ["https://tracker.example/issue/WAY-61"]
+
+    def test_a_ticket_not_in_the_queue_opens_nothing(self, studio: Studio, opened_urls: list[str]) -> None:
+        studio.review.openInTracker("WAY-999")
+        assert opened_urls == []
+
+
 class TestFocus:
     def test_opening_a_tile_asks_for_focus_mode_on_its_ticket(self, studio: Studio) -> None:
         board = studio.review
@@ -503,6 +646,204 @@ def tile_point(window: QQuickWindow, index: int) -> QPoint:
     cell_height = grid.property("cellHeight")
     local = QPointF((index % columns + 0.5) * cell_width, (index // columns + 0.5) * cell_height)
     return grid.mapToScene(local).toPoint()
+
+
+def click_item(window: QQuickWindow, name: str) -> None:
+    """Click a control by its object name."""
+    item = window.findChild(QQuickItem, name)
+    assert item is not None, name
+    centre = item.mapToScene(item.boundingRect().center()).toPoint()
+    QTest.mouseClick(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, centre)
+
+
+class TestOpeningMode:
+    @staticmethod
+    def open_window(
+        studio: Studio,
+        qt_application: QGuiApplication,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> tuple[QQmlApplicationEngine, QQuickWindow]:
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+        qt_application.setOrganizationName("AtelierTests")
+        qt_application.setApplicationName("AtelierTests")
+        engine = QQmlApplicationEngine()
+        engine.rootContext().setContextProperty("studio", studio)
+        engine.rootContext().setContextProperty("launchOptions", {"windowWidth": 1200, "windowHeight": 800})
+        engine.load(QUrl.fromLocalFile(str(_MAIN_QML)))
+        window = engine.rootObjects()[0]
+        assert isinstance(window, QQuickWindow)
+        return engine, window
+
+    def test_a_project_with_a_queue_opens_on_review_and_stays_where_the_reviewer_goes(
+        self,
+        studio: Studio,
+        qt_application: QGuiApplication,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        wait_until: WaitUntil,
+    ) -> None:
+        engine, window = self.open_window(studio, qt_application, tmp_path, monkeypatch)
+        assert window.property("mode") == "studio"
+        studio.openProject("Fake")
+        wait_until(lambda: window.property("mode") == "review")
+
+        # A later read of the queue leaves the reviewer in the Studio they went to.
+        window.setProperty("mode", "studio")
+        studio.review.apply_review_event(ReviewEvent(kind=ReviewEventKind.REFRESHED))
+        QTest.qWait(50)
+        assert window.property("mode") == "studio"
+        window.close()
+        del engine
+
+    def test_a_project_without_one_opens_on_the_studio(
+        self,
+        studio: Studio,
+        backend: FakeBackend,
+        qt_application: QGuiApplication,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        wait_until: WaitUntil,
+    ) -> None:
+        engine, window = self.open_window(studio, qt_application, tmp_path, monkeypatch)
+        window.setProperty("mode", "review")
+        backend.review_queue = ReviewQueue(is_configured=False)
+        studio.openProject("Fake")
+        wait_until(lambda: window.property("mode") == "studio")
+        window.close()
+        del engine
+
+
+class TestSelectionBar:
+    def test_it_shows_with_a_selection_and_says_how_many(
+        self,
+        studio: Studio,
+        review_window: tuple[QQuickWindow, list[QQmlError]],
+    ) -> None:
+        window, warnings = review_window
+        bar = window.findChild(QQuickItem, "selectionBar")
+        count = window.findChild(QQuickItem, "selectionCount")
+        assert bar is not None
+        assert count is not None
+        assert not bar.isVisible()
+
+        QTest.keyClick(window, Qt.Key.Key_Space)
+        QTest.keyClick(window, Qt.Key.Key_Right)
+        QTest.keyClick(window, Qt.Key.Key_Space)
+        assert bar.isVisible()
+        assert count.property("text") == "2 selected"
+
+        click_item(window, "selectAllButton")
+        assert studio.review.property("selectedCount") == 4
+        click_item(window, "clearSelectionButton")
+        assert not bar.isVisible()
+        assert [warning.toString() for warning in warnings] == []
+
+    def test_its_decisions_open_the_note_and_decide_nothing_until_sent(
+        self,
+        studio: Studio,
+        backend: FakeBackend,
+        review_window: tuple[QQuickWindow, list[QQmlError]],
+        wait_until: WaitUntil,
+    ) -> None:
+        window, warnings = review_window
+        QTest.keyClick(window, Qt.Key.Key_A, Qt.KeyboardModifier.ControlModifier)
+        click_item(window, "approveButton")
+        QTest.qWait(50)
+        assert backend.decisions == []
+
+        QTest.keyClick(window, Qt.Key.Key_Return)
+        wait_until(lambda: len(backend.decisions) == 1)
+        assert backend.decisions[0].verdict is ReviewVerdict.APPROVE
+        assert [warning.toString() for warning in warnings] == []
+
+    def test_the_hotkeys(
+        self,
+        studio: Studio,
+        review_window: tuple[QQuickWindow, list[QQmlError]],
+    ) -> None:
+        window, warnings = review_window
+        board = studio.review
+        control = Qt.KeyboardModifier.ControlModifier
+        control_shift = control | Qt.KeyboardModifier.ShiftModifier
+
+        QTest.keyClick(window, Qt.Key.Key_A, control)
+        assert board.property("selectedCount") == 4
+        QTest.keyClick(window, Qt.Key.Key_A, control_shift)
+        assert board.property("selectedCount") == 0
+        QTest.keyClick(window, Qt.Key.Key_Z, control)
+        assert board.property("selectedCount") == 4
+        QTest.keyClick(window, Qt.Key.Key_Z, control_shift)
+        assert board.property("selectedCount") == 0
+        QTest.keyClick(window, Qt.Key.Key_Z, control)
+        QTest.keyClick(window, Qt.Key.Key_Escape)
+        assert board.property("selectedCount") == 0
+        assert [warning.toString() for warning in warnings] == []
+
+    def test_the_hotkeys_keep_their_meaning_while_typing(
+        self,
+        studio: Studio,
+        review_window: tuple[QQuickWindow, list[QQmlError]],
+        wait_until: WaitUntil,
+    ) -> None:
+        window, _ = review_window
+        board = studio.review
+        board.selectAll()
+        QTest.keyClick(window, Qt.Key.Key_C)
+        wait_until(lambda: board.note.property("isEmpty"))
+        QTest.keyClick(window, Qt.Key.Key_N)
+        QTest.keyClick(window, Qt.Key.Key_A, Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier)
+        QTest.keyClick(window, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
+        assert board.property("selectedCount") == 4
+
+    def test_a_checkbox_click_keeps_the_selection_and_a_shift_click_extends_it(
+        self,
+        studio: Studio,
+        review_window: tuple[QQuickWindow, list[QQmlError]],
+    ) -> None:
+        window, warnings = review_window
+        board = studio.review
+        board.clickTile(0, 0)
+
+        def checkbox_point(index: int) -> QPoint:
+            grid = window.findChild(QQuickItem, "reviewGrid")
+            assert grid is not None
+            tile_centre = tile_point(window, index)
+            return QPoint(
+                tile_centre.x() - round(grid.property("cellWidth") / 2) + 24,
+                tile_centre.y() - round(grid.property("cellHeight") / 2) + 24,
+            )
+
+        none = Qt.KeyboardModifier.NoModifier
+        QTest.mouseClick(window, Qt.MouseButton.LeftButton, none, checkbox_point(2))
+        assert board.selected_tickets == ["WAY-60", "WAY-62"]
+        QTest.mouseClick(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.ShiftModifier, checkbox_point(3))
+        assert board.selected_tickets == ["WAY-60", "WAY-62", "WAY-63"]
+        assert [warning.toString() for warning in warnings] == []
+
+    def test_o_opens_the_ticket_under_the_cursor_in_the_tracker(
+        self,
+        opened_urls: list[str],
+        review_window: tuple[QQuickWindow, list[QQmlError]],
+    ) -> None:
+        window, _ = review_window
+        QTest.keyClick(window, Qt.Key.Key_O)
+        assert opened_urls == ["https://tracker.example/issue/WAY-60"]
+
+    def test_refresh_is_an_icon_with_a_tooltip(
+        self,
+        backend: FakeBackend,
+        review_window: tuple[QQuickWindow, list[QQmlError]],
+        studio: Studio,
+        wait_until: WaitUntil,
+    ) -> None:
+        window, warnings = review_window
+        button = window.findChild(QQuickItem, "refreshButton")
+        assert button is not None
+        assert button.property("text") == ""
+        click_item(window, "refreshButton")
+        wait_until(lambda: not studio.review.property("isRefreshing"))
+        assert [warning.toString() for warning in warnings] == []
 
 
 class TestReviewPage:

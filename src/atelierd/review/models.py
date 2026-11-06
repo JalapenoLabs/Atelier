@@ -30,10 +30,15 @@ class ReviewAttachment(_ReviewModel):
     path: Path
     mime_type: str = ""
     size: int = 0
+    caption: str = Field(default="", description="What the reviewer sees it called, in place of its file name.")
+    is_reference: bool = Field(default=False, description="Whether it is measuring material rather than the art.")
 
 
 class ReviewDelivery(_ReviewModel):
-    """A ticket's latest delivery: the newest comment with attachments that the reviewer did not write."""
+    """A ticket's latest delivery: the newest comment with attachments that the reviewer did not write.
+
+    Its attachments are in the order they are shown (`images.py`): the art, best first, then reference material.
+    """
 
     comment_id: str
     author: str
@@ -51,6 +56,7 @@ class ReviewComment(_ReviewModel):
     created_at: str
     text: str
     attachment_names: tuple[str, ...] = ()
+    captions: dict[str, str] = Field(default_factory=dict, description="What each attachment is called, by its name.")
     is_reviewer: bool = Field(default=False, description="Whether the reviewer's own identity wrote it.")
 
 
@@ -74,6 +80,7 @@ class ReviewItem(_ReviewModel):
     queues: tuple[str, ...] = Field(description="The queues that list it, in the config's order.")
     comments: tuple[ReviewComment, ...] = ()
     delivery: ReviewDelivery | None = None
+    round: int = Field(default=0, description="Which round of delivery the latest one is, from 1; 0 with none.")
     link: ReviewLink | None = None
 
 
@@ -89,6 +96,7 @@ class ReviewQueue(_ReviewModel):
     """A project's whole review queue as of its last refresh."""
 
     is_configured: bool = Field(description="Whether the project's atelier.toml has a [review] table.")
+    tracker_name: str = Field(default="", description="The tracker's name, as the reviewer knows it.")
     tabs: tuple[ReviewQueueTab, ...] = ()
     items: tuple[ReviewItem, ...] = ()
     refreshed_at: str | None = Field(default=None, description="When the last refresh finished; None before one.")

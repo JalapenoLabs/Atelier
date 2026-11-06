@@ -7,20 +7,29 @@ from pathlib import Path
 
 import pytest
 from fake_backend import CARBINE, CARBINE_EXPORT, FakeBackend
-from PySide6.QtCore import QPoint, QSettings, Qt, QUrl
+from PIL import Image
+from PySide6.QtCore import QPoint, QPointF, QSettings, Qt, QUrl
 from PySide6.QtGui import QColor, QGuiApplication, QImage
 from PySide6.QtQml import QQmlApplicationEngine, QQmlError
 from PySide6.QtQuick import QQuickItem, QQuickWindow
 from PySide6.QtTest import QTest
-from test_gui_review import carbine_history, make_image, make_item
+from test_gui_review import carbine_history, make_image, make_item, opened_urls  # noqa: F401
 
 from atelier.gui.app import _MAIN_QML
-from atelier.gui.focus import DRAFT_DIR_NAME, ReviewFocus, StageKind, stage_entries
+from atelier.gui.focus import DRAFT_DIR_NAME, ReviewFocus, StageKind, ThreadRow, stage_entries
 from atelier.gui.markup import BLANK_CANVAS_SIZE, DecisionDrawing, flatten_markup
 from atelier.gui.studio import Studio
 from atelier.gui.tasks import TaskRunner
-from atelierd.config import ReviewVerdict
-from atelierd.review import ReviewEvent, ReviewEventKind, ReviewLink, ReviewQueue, ReviewQueueTab
+from atelierd.config import ReviewImagesConfig, ReviewVerdict
+from atelierd.review import (
+    ReviewComment,
+    ReviewEvent,
+    ReviewEventKind,
+    ReviewLink,
+    ReviewQueue,
+    ReviewQueueTab,
+    arrange_attachments,
+)
 from atelierd.workers import Markup, Stroke, StrokeTool
 
 WaitUntil = Callable[[Callable[[], bool]], None]
@@ -48,11 +57,37 @@ def make_focus_queue(root: Path) -> ReviewQueue:
     # A zip's type says nothing, so it shows as a file by its name.
     carbine = items[0]
     assert carbine.delivery is not None
-    attachments = tuple(
-        attachment.model_copy(update={"mime_type": ""}) if attachment.name == "source.zip" else attachment
-        for attachment in carbine.delivery.attachments
+    attachments = arrange_attachments(
+        "WAY-60",
+        [
+            attachment.model_copy(update={"mime_type": ""}) if attachment.name == "source.zip" else attachment
+            for attachment in carbine.delivery.attachments
+        ],
+        ReviewImagesConfig(hero=("hero.*",), reference=("*_Compare.*",)),
     )
-    carbine = carbine.model_copy(update={"delivery": carbine.delivery.model_copy(update={"attachments": attachments})})
+    comments = (
+        ReviewComment(
+            id="4-1", author="Claude", created_at="2026-10-29T04:53:03+00:00", text="**Round 1**", attachment_names=()
+        ),
+        ReviewComment(
+            id="4-2",
+            author="Alex Navarro",
+            created_at="2026-10-30T10:00:00+00:00",
+            text="Chunkier grip",
+            is_reviewer=True,
+        ),
+        ReviewComment(
+            id=carbine.delivery.comment_id,
+            author="Claude",
+            created_at=DELIVERED_AT,
+            text="Round 2\n\n![](hero.png){width=100%}\n\n![](old-round.png)",
+            attachment_names=("hero.png", "old-round.png"),
+            captions={"hero.png": "Hero", "old-round.png": "Old round"},
+        ),
+        ReviewComment(id="4-9", author="Claude", created_at=DELIVERED_AT, text="A correction"),
+    )
+    arranged = carbine.delivery.model_copy(update={"attachments": attachments})
+    carbine = carbine.model_copy(update={"delivery": arranged, "comments": comments})
     return ReviewQueue(
         is_configured=True,
         tabs=(ReviewQueueTab(name="Art", query="tag: {Art asset}", tickets=("WAY-60", "WAY-61", "WAY-62", "WAY-63")),),
@@ -97,18 +132,25 @@ def draw_line(drawing: DecisionDrawing, tool: str = "pen") -> None:
 
 
 class TestStage:
-    def test_images_come_first_hero_then_compare_sheets_then_model_sounds_and_files(self, studio: Studio) -> None:
+    def test_art_comes_first_in_the_deliverys_order_then_the_model_reference_sounds_and_files(
+        self, studio: Studio
+    ) -> None:
         item = studio.review.item("WAY-60")
         assert item is not None
         entries = stage_entries(item)
         assert [(entry.kind, entry.name) for entry in entries] == [
-            (StageKind.IMAGE, "hero.png"),
-            (StageKind.IMAGE, "Carbine_Compare.png"),
-            (StageKind.IMAGE, "detail.png"),
-            (StageKind.MODEL, "SK_Carbine (3D)"),
-            (StageKind.AUDIO, "shot.mp3"),
-            (StageKind.FILE, "source.zip"),
+            (StageKind.IMAGE, "Hero"),
+            (StageKind.IMAGE, "Detail"),
+            (StageKind.MODEL, "3D view"),
+            (StageKind.IMAGE, "Carbine compare"),
+            (StageKind.AUDIO, "Shot"),
+            (StageKind.FILE, "Source"),
         ]
+        assert entries[3].file_name == "Carbine_Compare.png"
+
+    def test_a_file_without_a_caption_shows_its_name(self, tmp_path: Path) -> None:
+        item = make_item("WAY-61", "[Art] Wall", (make_image(tmp_path / "wall.png", 64, 64),))
+        assert stage_entries(item)[0].name == "wall.png"
 
     def test_opening_a_ticket_shows_its_hero_and_the_filmstrip_switches(self, studio: Studio) -> None:
         focus = studio.focus
@@ -117,10 +159,9 @@ class TestStage:
         assert focus.property("positionLabel") == "1 of 4"
         assert focus.property("currentKind") == "image"
         assert focus.property("currentUrl").endswith("/WAY-60/hero.png")
-        assert focus.property("deliveryText") == "Delivered"
 
         focus.stepEntry(-1)
-        assert focus.property("currentName") == "source.zip"
+        assert focus.property("currentName") == "Source"
         focus.stepEntry(1)
         assert focus.property("stageIndex") == 0
         assert [row.is_current for row in focus.property("stageRows").rows][:2] == [True, False]
@@ -128,7 +169,7 @@ class TestStage:
     def test_the_model_entry_shows_the_linked_source_on_the_named_export(self, studio: Studio) -> None:
         focus = studio.focus
         studio.review.openTicket(0)
-        focus.showEntry(3)
+        focus.showEntry(2)
         assert focus.property("currentKind") == "model"
         assert studio.property("selectedSource") == CARBINE
         assert studio.property("selectedExport") == CARBINE_EXPORT
@@ -422,7 +463,117 @@ def stage_point(window: QQuickWindow, x: float, y: float) -> QPoint:
     )
 
 
+class TestThread:
+    @staticmethod
+    def rows(focus: ReviewFocus) -> list[ThreadRow]:
+        return [row for row in focus.property("threadRows").rows if isinstance(row, ThreadRow)]
+
+    def test_it_is_the_whole_conversation_oldest_first(self, studio: Studio) -> None:
+        studio.review.openTicket(0)
+        rows = self.rows(studio.focus)
+        assert [row.author for row in rows] == ["Claude", "Alex Navarro", "Claude", "Claude"]
+        assert [row.is_reviewer for row in rows] == [False, True, False, False]
+        assert [row.is_delivery for row in rows] == [False, False, True, False]
+        assert rows[0].text == "**Round 1**"
+        assert rows[0].date == "October 28th 2026" or rows[0].date == "October 29th 2026"
+        assert " at " in rows[0].full_date
+
+    def test_its_images_link_to_the_stage_or_the_ticket(self, studio: Studio) -> None:
+        studio.review.openTicket(0)
+        text = self.rows(studio.focus)[2].text
+        assert "[Hero](atelier-stage:hero.png)" in text
+        assert "[Old round](https://tracker.example/issue/WAY-60)" in text
+
+    def test_a_link_to_the_stage_shows_that_file(self, studio: Studio) -> None:
+        focus = studio.focus
+        studio.review.openTicket(0)
+        focus.showEntry(1)
+        focus.followLink("atelier-stage:hero.png")
+        assert focus.property("currentName") == "Hero"
+
+    def test_only_web_links_leave_the_window(self, studio: Studio, opened_urls: list[str]) -> None:  # noqa: F811
+        focus = studio.focus
+        studio.review.openTicket(0)
+        focus.followLink("https://tracker.example/issue/WAY-1")
+        focus.followLink("file:///etc/passwd")
+        assert opened_urls == ["https://tracker.example/issue/WAY-1"]
+
+    def test_a_new_comment_joins_a_ticket_already_open(
+        self, studio: Studio, backend: FakeBackend, wait_until: WaitUntil
+    ) -> None:
+        focus = studio.focus
+        studio.review.openTicket(0)
+        carbine = backend.review_queue.items[0]
+        added = ReviewComment(id="4-10", author="Claude", created_at=DELIVERED_AT, text="One more thing")
+        fresh = carbine.model_copy(update={"comments": (*carbine.comments, added)})
+        backend.review_queue = backend.review_queue.model_copy(
+            update={"items": (fresh, *backend.review_queue.items[1:])}
+        )
+        studio.review.refresh()
+        wait_until(lambda: len(self.rows(focus)) == 5)
+        assert focus.property("ticket") == "WAY-60"
+
+
 class TestFocusPage:
+    def test_the_thread_opens_on_the_latest_delivery_under_the_note(
+        self,
+        studio: Studio,
+        focus_window: tuple[QQuickWindow, list[QQmlError]],
+        wait_until: WaitUntil,
+    ) -> None:
+        window, warnings = focus_window
+        thread = window.findChild(QQuickItem, "focusThread")
+        notes = window.findChild(QQuickItem, "focusDraftField")
+        assert thread is not None
+        assert notes is not None
+        wait_until(lambda: thread.property("count") == 4)
+        assert notes.mapToScene(notes.boundingRect().topLeft()).y() < thread.mapToScene(QPointF(0, 0)).y()
+        assert [warning.toString() for warning in warnings] == []
+
+    def test_o_and_the_button_open_the_ticket_in_the_tracker(
+        self,
+        opened_urls: list[str],  # noqa: F811
+        focus_window: tuple[QQuickWindow, list[QQmlError]],
+    ) -> None:
+        window, warnings = focus_window
+        QTest.keyClick(window, Qt.Key.Key_O)
+        button = window.findChild(QQuickItem, "focusOpenInTracker")
+        assert button is not None
+        centre = button.mapToScene(button.boundingRect().center()).toPoint()
+        QTest.mouseClick(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, centre)
+        assert opened_urls == ["https://tracker.example/issue/WAY-60"] * 2
+        assert [warning.toString() for warning in warnings] == []
+
+    def test_an_animation_plays_on_the_stage(
+        self,
+        studio: Studio,
+        backend: FakeBackend,
+        tmp_path: Path,
+        focus_window: tuple[QQuickWindow, list[QQmlError]],
+        wait_until: WaitUntil,
+    ) -> None:
+        window, warnings = focus_window
+        animation = window.findChild(QQuickItem, "focusStageAnimation")
+        assert animation is not None
+        assert animation.property("source").toString() == ""
+
+        gif = tmp_path / "state" / "walk.gif"
+        Image.new("P", (8, 8)).save(gif)
+        walk = make_item("WAY-61", "[Art] Wall", (gif,))
+        assert walk.delivery is not None
+        attachment = walk.delivery.attachments[0].model_copy(update={"mime_type": "image/gif"})
+        walk = walk.model_copy(update={"delivery": walk.delivery.model_copy(update={"attachments": (attachment,)})})
+        queue = backend.review_queue
+        backend.review_queue = queue.model_copy(update={"items": (queue.items[0], walk, *queue.items[2:])})
+        studio.review.refresh()
+        wait_until(lambda: not studio.review.property("isRefreshing"))
+
+        QTest.keyClick(window, Qt.Key.Key_Right)
+        assert studio.focus.property("ticket") == "WAY-61"
+        assert animation.property("source").toString().endswith("/walk.gif")
+        assert animation.isVisible()
+        assert [warning.toString() for warning in warnings] == []
+
     def test_the_keyboard_draws_writes_and_finishes_with_changes(
         self,
         studio: Studio,
@@ -435,7 +586,7 @@ class TestFocusPage:
         assert focus.property("ticket") == "WAY-60"
 
         QTest.keyClick(window, Qt.Key.Key_Down)
-        assert focus.property("currentName") == "Carbine_Compare.png"
+        assert focus.property("currentName") == "Detail"
         QTest.keyClick(window, Qt.Key.Key_Up)
 
         # D draws on the hero, with a drag of the highlighter.

@@ -16,7 +16,8 @@ Until the daemon answers, the window shows a page saying so, with **Start atelie
 ## Window
 
 Two modes, switched in the header: the **Studio**, a three-pane view of the catalog, and **Review**, a grid of the
-project's review queue (see "Review mode" below). The Studio:
+project's review queue (see "Review mode" below). A project opens on Review when it has a review queue, and on the
+Studio when it has none; switching modes after that is the reviewer's. The Studio:
 
 ```
 ┌ Atelier  AnchorFall ▾  status message ────────────────────────────────────── [2 approvals] ┐
@@ -48,8 +49,7 @@ project's review queue (see "Review mode" below). The Studio:
 - **Context** (right): tabs for the source's worker chat (see `workers.md`), the references rail, and its README
   rendered as Markdown.
 
-Panel sizes, the selected tab, the last project, the mode, the viewport's display settings and each project's open tree
-rows
+Panel sizes, the selected tab, the last project, the viewport's display settings and each project's open tree rows
 (`sourceTree/<project>/`) are remembered per machine, in Qt's settings (`~/.config/JalapenoLabs/Atelier.conf`).
 Everything else the window shows comes from the core, apart from its colours, which come from a theme file and
 follow it live (see `theming.md`).
@@ -193,53 +193,67 @@ Audio) showing how many tickets it holds. It is built for working through a hund
 
 ```
 ┌ Atelier  Waystead ▾  Studio [Review 24]  status message ──────────────────────────── [0 approvals] ┐
-│ [Art 24]  UI 0  Audio 1                       5 selected  [Approve] [Request changes] [Refresh] │
+│ [Art 24]  UI 0  Audio 1                                                                       (⟳) │
 │ ┌────────────────┐ ┌────────────────┐ ┌────────────────┐ ┌────────────────┐                     │
-│ │ Approve·Queued │ │                │ │ Changes·Failed │ │                │                     │
+│ │☑ Approve·Queued│ │☐               │ │☑ Changes·Failed│ │☐               │                     │
 │ │   hero image   │ │   hero image   │ │   hero image   │ │ 1 file, no     │                     │
 │ │                │ │                │ │                │ │ image          │                     │
 │ │ WAY-100 Carbine│ │ WAY-101 Pistol │ │ WAY-102 Wall   │ │ WAY-103 Door   │                     │
-│ │ [Art asset]    │ │ [Art asset]    │ │ [Art asset]    │ │ [Audio]        │                     │
+│ │ [Art asset] Round 2│ [Art asset] R…│ │ [Art asset]  … │ │ [Audio] Round 1│                     │
 │ └────────────────┘ └────────────────┘ └────────────────┘ └────────────────┘                     │
+│            ┌ 2 selected [☑ Select all] │ [✓ Approve] [✎ Request changes] │ [×] ┐                 │
 └──────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-- **A tile** shows the ticket's hero image, its id, summary and tags, and its decision job's state as a badge
-  (queued, writing, posting, posted or failed, with the verdict: "Approve · Writing"). A failed badge says why on
-  hover and offers **Retry** (`review.retry`). A job decided on an earlier delivery than the ticket's current one
-  shows no badge.
-- **The hero image** is the first image of the latest delivery (by its type, or by its name when the tracker gave no
-  type). A ticket with no image in its delivery shows the newest standard `hero` render of the source it links to, if
-  that has been rendered; the grid never starts a render. Otherwise the tile says what it has ("1 file, no image",
-  "No delivery yet").
+- **A tile** shows the ticket's hero image, a checkbox, its id, summary, tags and delivery round ("Round 2"), and its
+  decision job's state as a badge (queued, writing, posting, posted or failed, with the verdict: "Approve · Writing").
+  A failed badge says why on hover and offers **Retry** (`review.retry`). A job decided on an earlier delivery than
+  the ticket's current one shows no badge.
+- **The hero image** is the first image of the latest delivery in the order `[review.images]` gives it (see
+  `review.md`, "Images"), so it is the art rather than the measuring material. When the delivery's first image is
+  reference, the newest standard `hero` render of the source the ticket links to shows instead, if that has been
+  rendered; the grid never starts a render. With neither, the reference image shows rather than nothing. A ticket
+  with no image says what it has ("1 file, no image", "No delivery yet").
 - **Thumbnails**: each hero is decoded once, straight to at most 480 pixels on its longest side (Qt's
   `QImageReader.setScaledSize`), and kept as a PNG in `<state>/cache/thumbnails/`, named by the image's path, size and
   modification time, so an unchanged image is never decoded again and a changed one gets a new thumbnail. Finding and
   making them runs on a pool of four threads of its own, so a queue of a hundred or more tickets fills in as they
   arrive without holding up the window, and the grid loads its images asynchronously. An image that cannot be decoded
-  (deliveries are untrusted files) leaves its tile with a note instead.
+  (deliveries are untrusted files) leaves its tile with a note instead. A hero found for a delivery that has since
+  been replaced is dropped, never shown over the current one's.
 - **Following the queue**: the grid reads the queue when the project opens and again on every queue event, and badges
   tiles as decision job events arrive. A ticket leaves the grid when its decision posts (the daemon's `decided`
   event). Tiles are removed, added and updated in place, never rebuilt, so the grid keeps its scroll, its selection
-  and the cursor's place. A refresh that fails keeps the tiles and says why above them. **Refresh** (F5) reads the
-  tracker again now. A project with no `[review]` table says so.
+  and the cursor's place. A refresh that fails keeps the tiles and says why above them. The refresh button (an icon
+  at the tabs' right, turning while the tracker is read), or F5, reads the tracker again now. A project with no
+  `[review]` table says so.
 
 ### Selecting and deciding
+
+While anything is selected, a **selection bar** floats at the bottom of the grid, from left to right: how many are
+selected and **Select all**, a divider, **Approve** and **Request changes**, a divider, and an X that clears the
+selection (Esc, its tooltip says). The grid keeps room to scroll its last row clear of the bar.
 
 | Input                           | Does                                                                          |
 |---------------------------------|-------------------------------------------------------------------------------|
 | Arrows, Home, End               | Move the cursor (the outlined tile); the grid starts with it on the first tile |
 | Shift+arrows                    | Select from the last tile picked to the cursor                                 |
-| Space                           | Select or unselect the tile under the cursor                                   |
-| Ctrl+A                          | Select every tile of the tab                                                   |
-| Esc                             | Select nothing                                                                 |
+| Space, a tile's checkbox        | Select or unselect that tile, keeping the rest                                 |
+| Ctrl+A, **Select all**          | Select every tile of the tab                                                   |
+| Ctrl+Shift+A, Esc, the bar's X  | Select nothing                                                                 |
+| Ctrl+Z, Ctrl+Shift+Z            | Undo and redo the last change to the selection                                 |
 | Click, Ctrl+click               | Select one tile; toggle one                                                    |
-| Shift+click, Ctrl+Shift+click   | Select the range from the last tile clicked; add it to the selection           |
-| Drag on the grid                | A selection box: what it covers is selected (with Ctrl, added), scrolled-off tiles included |
+| Shift+click, Ctrl+Shift+click   | Add the range from the last tile picked; take it away                          |
+| Drag on the grid                | A selection box: what it covers is selected (with Ctrl, added), scrolled-off tiles included; it undoes as one change |
 | A, **Approve**                  | Approve, with an optional short note                                           |
 | C, **Request changes**          | Request changes, with one note for every ticket                                |
 | Enter, double click             | Open the ticket in focus mode                                                  |
-| F5, **Refresh**                 | Read the queue from the tracker again                                          |
+| O                               | Open the ticket under the cursor in the tracker, in the default browser        |
+| F5, the refresh button          | Read the queue from the tracker again                                          |
+
+These keys belong to the grid, so in a text field (the note) they keep their usual meaning. Undo and redo reach back
+to the start of the tab: switching tabs, or a decision taking tickets out of the selection, starts the history
+afresh, and a ticket that has left the tab never comes back with an undo.
 
 A decision covers the selection, or the tile under the cursor when nothing is selected. A or C opens its **note**: the
 reviewer's takes, verbatim and in order, above a field for typing, whose text is the last take. Enter sends it
@@ -261,26 +275,40 @@ Opening a tile reviews its ticket alone, large, as fast as the reviewer can thin
 ticket shown; the page is `ReviewFocusPage.qml` over `atelier.gui.focus.ReviewFocus` (`studio.reviewFocus`).
 
 ```
-┌ [Back to the grid]  WAY-60  [Art] Carbine     Changes · Queued   1 of 24  [Approve] [Finish with changes] ┐
+┌ [Back to the grid] WAY-60 [Art] Carbine  Changes · Queued  1 of 24 [↗ Open in YouTrack] [Approve] [Finish with changes] ┐
 │ (while drawing: Pen Highlighter Eraser Arrow Box · colours · S M L · Undo Redo Clear   [Discard] [Keep]) │
-│ ┌ hero.png 1600 × 1200 ──────────────────────────────────────────┐ │ Notes                  2 takes │
+│ ┌ Turnaround ─────────────────────────────────────────────────────┐ │ Notes                  2 takes │
 │ │                                                                 │ │ [take 1, editable]             │
-│ │   the stage: an image, the 3D view, a sound, or a drawing       │ │ [take 2, editable]             │
-│ │                                                                 │ │ [the note being typed]         │
-│ └─────────────────────────────────────────────────────────────────┘ │ Drawings  [▣ ×] [▣ ×]          │
-│ [hero] [compare] [detail] [3D] [Sound] [File]                         │ The delivery says …            │
+│ │   the stage: an image, an animation, the 3D view, a sound,      │ │ [the note being typed]         │
+│ │   or a drawing                                                  │ │ Drawings  [▣ ×] [▣ ×]          │
+│ │                                                                 │ │ ────────────────────────────── │
+│ │                                                                 │ │ Alex Navarro  October 28th 2026│
+│ │                                                                 │ │ Make the grip chunkier …       │
+│ └─────────────────────────────────────────────────────────────────┘ │ Claude  Latest delivery  Oct…  │
+│ [Turnaround] [World] [Icon sheet] [3D view] [Reference sheet] [Compare side] │ **Round 2** …  Turnaround · World │
 └───────────────────────────────────────────────────────────────────────┴───────────────────────────────┘
 ```
 
-- **The stage** shows the latest delivery's images, the hero (its first image, as on the tile) first, then compare
-  sheets (an image whose name says `compare`), then the rest; then the 3D view of the source the ticket links to;
-  then its sounds, with a play button; then any other file by name. The filmstrip under it lists them all. The 3D
-  view is the studio's own viewport state: showing it selects the linked source on the first export the ticket file
-  names, so it loads, converts and caches exactly as in the Studio.
-- **The note** beside the stage is the ticket's own `DecisionNote`, kept per ticket while the reviewer moves back and
-  forth: the takes in order, each editable in place, and the field being typed, which is the last take. General
-  notes ("overall", "for all the weapons") stay in the words; the decision job splits them out (see `review.md`).
-  The panel also lists the drawings the decision will carry, each removable, and the delivery comment's own words.
+- **The stage** shows the latest delivery's art first, in the order `[review.images]` gives it (so its first image is
+  the tile's hero); then the 3D view of the source the ticket links to; then the delivery's reference images; then
+  its sounds, with a play button; then any other file by name. A GIF plays. The filmstrip under it lists them all by
+  caption ("Compare side"), each file's own name on hover, and the stage's corner names the one shown. The 3D view is
+  the studio's own viewport state: showing it selects the linked source on the first export the ticket file names,
+  so it loads, converts and caches exactly as in the Studio.
+- **The note** at the top of the side panel is the ticket's own `DecisionNote`, kept per ticket while the reviewer
+  moves back and forth: the takes in order, each editable in place, and the field being typed, which is the last
+  take. General notes ("overall", "for all the weapons") stay in the words; the decision job splits them out (see
+  `review.md`). It also lists the drawings the decision will carry, each removable. However much is in it, the note
+  takes at most two fifths of the panel and scrolls within that, so the thread stays in view.
+- **The thread** under it is every comment on the ticket, oldest first: the author (the reviewer's own name in the
+  accent colour), the date ("October 28th 2026", with the time on hover), "Latest delivery" on the comment the stage
+  shows, and the text as formatted Markdown, tables and lists included. A ticket opens with the thread on its latest
+  delivery, and it scrolls with the wheel or Page Up and Page Down. Comment text is untrusted tracker data, so
+  nothing in it loads: each image is a link by its caption, which shows that file on the stage when it is part of
+  the latest delivery and opens the ticket in the tracker otherwise; a row of images is one line of links; raw HTML
+  shows as text; and only web links open, in the browser. The thread follows the queue, so a comment posted while the
+  ticket is open joins it.
+- **Open in YouTrack** (named for the project's tracker), or O, opens the ticket's page in the default browser.
 - **Moving on never waits.** A and C submit the decision through the board (`ReviewBoard.submit`, one
   `review.decide` in the background) and open the next ticket of the tab with no decision on its way at once,
   wrapping around to the start; with none left, the grid comes back. The decided ticket counts as busy from that
@@ -300,6 +328,8 @@ ticket shown; the page is `ReviewFocusPage.qml` over `atelier.gui.focus.ReviewFo
 | D                         | Draw on the image shown, or on a frame frozen from the 3D view; D, Enter or Esc keeps the drawing |
 | B                         | Sketch on a blank canvas                                                           |
 | N                         | Write in the note; Esc gives the keys back to the page                              |
+| O, **Open in YouTrack**   | Open the ticket in the tracker, in the default browser                              |
+| Page Up, Page Down        | Scroll the thread                                                                   |
 | Hold `` ` ``              | Talk: record a take into the note, transcribed when let go (see `review.md`)        |
 | R                         | Retake: discard the newest take after the checkpoint, and its recording             |
 | K                         | Checkpoint: lock the takes so far, so a retake keeps them                            |

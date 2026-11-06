@@ -6,13 +6,14 @@ leaves the grid when the daemon's `decided` event says its decision posted. Tile
 updates (removed, inserted or replaced, never reset), so the grid keeps its scroll and the reviewer their place.
 
 The selection is a set of tickets in the current tab, with a keyboard cursor and the anchor a Shift range runs from.
-A decision covers the selection, or the tile under the cursor when nothing is selected; several tickets share one
-note, which makes it a bulk decision. The note is a `DecisionNote`: the reviewer's takes, verbatim and in order, plus
+Every change to it can be undone and redone, until the tab changes or a decision takes tickets out of it. A decision
+covers the selection, or the tile under the cursor when nothing is selected; several tickets share one note, which
+makes it a bulk decision. The note is a `DecisionNote`: the reviewer's takes, verbatim and in order, plus
 what they are typing. Voice notes add their takes to the same note.
 
-Each tile shows its ticket's hero image: the first image of the latest delivery or, with none, the newest standard
-`hero` render of the source the ticket links to. Heroes are found and thumbnailed off the UI thread
-(`thumbnails.py`), once per delivery, and fill their tiles as they arrive.
+Each tile shows its ticket's hero image: the first image of the latest delivery, in the order `[review.images]` gives
+it, or, when that delivery holds no art, the newest standard `hero` render of the source the ticket links to. Heroes
+are found and thumbnailed off the UI thread (`thumbnails.py`), once per delivery, and fill their tiles as they arrive.
 
 Opening a tile (Enter, a double click) asks for focus mode on its ticket through `focusRequested`; the window shows
 the focused ticket on its own page (`focus.py`) until the reviewer goes back to the grid. Focus mode walks the current
@@ -31,6 +32,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 from PySide6.QtCore import Property, QObject, Qt, QUrl, Signal, Slot
+from PySide6.QtGui import QDesktopServices
 
 from atelier.gui.backend import StudioBackend
 from atelier.gui.chat import RunWork
@@ -115,6 +117,7 @@ class ReviewTile(BaseModel):
     thumbnail_url: str
     hero_url: str
     hero_note: str
+    round_label: str
     job_id: int
     job_state: str
     job_label: str
@@ -351,6 +354,8 @@ class ReviewBoard(QObject):
     focusChanged = Signal()
     # Focus mode opens on this ticket.
     focusRequested = Signal(str)
+    # The open project's queue was read for the first time: whether it has one.
+    projectQueueKnown = Signal(bool)
 
     def __init__(
         self,
@@ -382,6 +387,11 @@ class ReviewBoard(QObject):
         self._anchor = ""
         # The selection a drag box started from; None when no box is being dragged.
         self._box_base: set[str] | None = None
+        # The selection before the drag box, which undoing the box goes back to.
+        self._box_before: set[str] = set()
+        # The selections to go back and forward to, nearest last.
+        self._undo_selections: list[set[str]] = []
+        self._redo_selections: list[set[str]] = []
         self._focused = ""
         # Tickets whose decision has been submitted but not yet answered with its job.
         self._submitting: set[str] = set()
@@ -409,6 +419,9 @@ class ReviewBoard(QObject):
 
     def _get_ticket_count(self) -> int:
         return len(self._items)
+
+    def _get_tracker_name(self) -> str:
+        return self._queue.tracker_name
 
     def _get_tab_rows(self) -> QObject:
         return self._tab_rows
@@ -442,6 +455,7 @@ class ReviewBoard(QObject):
     isRefreshing = Property(bool, _get_is_refreshing, notify=changed)
     hasRefreshed = Property(bool, _get_has_refreshed, notify=changed)
     ticketCount = Property(int, _get_ticket_count, notify=changed)
+    trackerName = Property(str, _get_tracker_name, notify=changed)
     tabRows = Property(QObject, _get_tab_rows, constant=True)
     currentTab = Property(str, _get_current_tab, notify=changed)
     tileRows = Property(QObject, _get_tile_rows, constant=True)
@@ -509,15 +523,17 @@ class ReviewBoard(QObject):
         self._pending_heroes = {}
         self._current_tab = ""
         self._selected = set()
+        self._forget_selection_history()
         self._cursor = ""
         self._anchor = ""
         self._focused = ""
         self._submitting = set()
         self.note.clear()
         self._rebuild()
+        generation = self._generation
         self._run_work(
             lambda: (self._backend.get_review_queue(), self._backend.list_decision_jobs()),
-            self._on_loaded,
+            lambda loaded: self._on_loaded(generation, loaded),
         )
 
     def apply_review_event(self, event: ReviewEvent) -> None:
@@ -541,10 +557,14 @@ class ReviewBoard(QObject):
         self.changed.emit()
         self._run_work(self._backend.refresh_review_queue, self._set_queue, lambda error: self._end_refreshing())
 
-    def _on_loaded(self, loaded: tuple[ReviewQueue, list[DecisionJob]]) -> None:
+    def _on_loaded(self, generation: int, loaded: tuple[ReviewQueue, list[DecisionJob]]) -> None:
+        if generation != self._generation:
+            logger.debug("[Review] Dropped a queue read for a project no longer open")
+            return
         queue, jobs = loaded
         self._take_jobs(jobs)
         self._set_queue(queue)
+        self.projectQueueKnown.emit(queue.is_configured)
 
     def _end_refreshing(self) -> None:
         self._is_refreshing = False
@@ -581,27 +601,39 @@ class ReviewBoard(QObject):
             return
         self._current_tab = name
         self._selected = set()
+        self._forget_selection_history()
         self._cursor = ""
         self._anchor = ""
         self._rebuild()
 
     @Slot(int, int)
     def clickTile(self, index: int, modifiers: int) -> None:
-        """Select as a click does: alone, Ctrl toggles one, Shift selects a range from the last tile clicked."""
+        """Select as a click does: alone, Ctrl toggles one, Shift adds a range, Ctrl+Shift takes a range away."""
         ticket = self._ticket_at(index)
         if not ticket:
             return
         held = Qt.KeyboardModifier(modifiers)
-        is_adding = bool(held & Qt.KeyboardModifier.ControlModifier)
         if held & Qt.KeyboardModifier.ShiftModifier and self._anchor:
-            range_tickets = self._range(self._anchor, ticket)
-            self._set_selection((self._selected | range_tickets) if is_adding else range_tickets)
-            self._set_cursor(ticket)
+            self._apply_range(ticket, held)
             return
-        if is_adding:
+        if held & Qt.KeyboardModifier.ControlModifier:
             self._set_selection(self._selected ^ {ticket})
         else:
             self._set_selection({ticket})
+        self._anchor = ticket
+        self._set_cursor(ticket)
+
+    @Slot(int, int)
+    def checkTile(self, index: int, modifiers: int) -> None:
+        """Tick a tile's checkbox: it toggles that tile whatever else is selected, and takes Shift ranges too."""
+        ticket = self._ticket_at(index)
+        if not ticket:
+            return
+        held = Qt.KeyboardModifier(modifiers)
+        if held & Qt.KeyboardModifier.ShiftModifier and self._anchor:
+            self._apply_range(ticket, held)
+            return
+        self._set_selection(self._selected ^ {ticket})
         self._anchor = ticket
         self._set_cursor(ticket)
 
@@ -641,10 +673,21 @@ class ReviewBoard(QObject):
         """Select nothing."""
         self._set_selection(set())
 
+    @Slot()
+    def undoSelection(self) -> None:
+        """Go back to the selection before the last change."""
+        self._step_selection_history(self._undo_selections, self._redo_selections)
+
+    @Slot()
+    def redoSelection(self) -> None:
+        """Go forward to the selection the last undo left."""
+        self._step_selection_history(self._redo_selections, self._undo_selections)
+
     @Slot(bool)
     def beginBoxSelection(self, is_adding: bool) -> None:
         """Start a drag box: it selects what it covers, added to the selection when `is_adding` (Ctrl)."""
         self._box_base = set(self._selected) if is_adding else set()
+        self._box_before = set(self._selected)
 
     @Slot(list)
     def updateBoxSelection(self, indices: list[Any]) -> None:
@@ -653,12 +696,14 @@ class ReviewBoard(QObject):
             logger.debug("[Review] A drag box was updated without being begun")
             return
         covered = {ticket for ticket in (self._ticket_at(int(index)) for index in indices) if ticket}
-        self._set_selection(self._box_base | covered)
+        self._show_selection(self._box_base | covered)
 
     @Slot()
     def endBoxSelection(self) -> None:
-        """Finish the drag box."""
+        """Finish the drag box, which undoes as one change however far it was dragged."""
         self._box_base = None
+        if self._box_before != self._selected:
+            self._remember_selection(self._box_before)
 
     # ####################### #
     #   DECISIONS AND FOCUS   #
@@ -776,11 +821,27 @@ class ReviewBoard(QObject):
         self._focused = ""
         self.focusChanged.emit()
 
+    @Slot(str)
+    def openInTracker(self, ticket: str) -> None:
+        """Open a ticket's page in the tracker, in the default browser."""
+        item = self._items.get(ticket)
+        if item is None:
+            logger.debug(f"[Review] {ticket or 'No ticket'} is not in the queue to open")
+            return
+        if not QDesktopServices.openUrl(QUrl(item.url)):
+            self._show_message(f"Could not open {item.url}")
+
+    @Slot()
+    def openCursorInTracker(self) -> None:
+        """Open the tile under the cursor in the tracker (O)."""
+        self.openInTracker(self._cursor)
+
     def _on_decided(self, jobs: list[DecisionJob], message: str) -> None:
         self.note.clear()
         # The note's recordings went with it as words; the next bulk note starts with none.
         shutil.rmtree(self.bulk_draft_folder, ignore_errors=True)
         self._selected -= {job.ticket for job in jobs}
+        self._forget_selection_history()
         self._refresh_tiles()
         self.selectionChanged.emit()
         self._show_message(message)
@@ -846,6 +907,7 @@ class ReviewBoard(QObject):
             thumbnail_url=_file_url(hero.thumbnail_path) if hero and is_hero_current else "",
             hero_url=_file_url(hero.image_path) if hero and is_hero_current else "",
             hero_note=hero.note if hero and is_hero_current else "Loading…",
+            round_label=f"Round {item.round}" if item.round else "",
             job_id=job.id if job and is_job_current else 0,
             job_state=job.state.value if job and is_job_current else "",
             job_label=_job_label(job) if job and is_job_current else "",
@@ -856,9 +918,41 @@ class ReviewBoard(QObject):
     def _set_selection(self, selected: set[str]) -> None:
         if selected == self._selected:
             return
+        self._remember_selection(self._selected)
+        self._show_selection(selected)
+
+    def _show_selection(self, selected: set[str]) -> None:
+        if selected == self._selected:
+            return
         self._selected = selected
         self._refresh_tiles()
         self.selectionChanged.emit()
+
+    def _remember_selection(self, selection: set[str]) -> None:
+        self._undo_selections.append(selection)
+        self._redo_selections.clear()
+
+    def _forget_selection_history(self) -> None:
+        self._undo_selections.clear()
+        self._redo_selections.clear()
+
+    def _step_selection_history(self, source: list[set[str]], destination: list[set[str]]) -> None:
+        """Take the nearest selection from one history, leaving the one shown now on the other."""
+        if not source:
+            logger.debug("[Review] No selection to go back or forward to")
+            return
+        destination.append(self._selected)
+        # A ticket that left the tab since cannot come back with it.
+        self._show_selection(source.pop() & set(self._tab_tickets()))
+
+    def _apply_range(self, ticket: str, held: Qt.KeyboardModifier) -> None:
+        """Add the tiles from the anchor to a ticket to the selection, or take them away with Ctrl held too."""
+        range_tickets = self._range(self._anchor, ticket)
+        if held & Qt.KeyboardModifier.ControlModifier:
+            self._set_selection(self._selected - range_tickets)
+        else:
+            self._set_selection(self._selected | range_tickets)
+        self._set_cursor(ticket)
 
     def _set_cursor(self, ticket: str) -> None:
         if ticket == self._cursor:
@@ -923,18 +1017,19 @@ class ReviewBoard(QObject):
     def _find_hero(self, item: ReviewItem, basis: str, thumbnails: ThumbnailCache) -> _Hero:
         """Blocking: the hero image of a ticket and its thumbnail."""
         delivery = item.delivery
-        if delivery is not None:
-            images = delivery_images(delivery)
-            if images:
-                return _thumbnailed(basis, images[0].path, thumbnails)
+        images = delivery_images(delivery) if delivery else []
+        if images and not images[0].is_reference:
+            return _thumbnailed(basis, images[0].path, thumbnails)
         if item.link is not None:
             hero_path = _standard_hero(self._backend.get_history(item.link.source), item.link.exports)
             if hero_path is not None:
                 return _thumbnailed(basis, hero_path, thumbnails)
-            if delivery is None:
-                return _Hero(basis=basis, note="No delivery, and no standard render yet")
+        if images:
+            # Measuring material is all there is to show.
+            return _thumbnailed(basis, images[0].path, thumbnails)
         if delivery is None:
-            return _Hero(basis=basis, note="No delivery yet")
+            note = "No delivery, and no standard render yet" if item.link else "No delivery yet"
+            return _Hero(basis=basis, note=note)
         file_count = len(delivery.attachments)
         files = "1 file" if file_count == 1 else f"{file_count} files"
         return _Hero(basis=basis, note=f"{files}, no image")
@@ -945,6 +1040,11 @@ class ReviewBoard(QObject):
             return
         if self._pending_heroes.get(ticket) == hero.basis:
             del self._pending_heroes[ticket]
+        item = self._items.get(ticket)
+        if item is None or _hero_basis(item) != hero.basis:
+            # Found for a delivery since replaced: the current one's hero is on its way, and must not be overwritten.
+            logger.debug(f"[Review] Dropped a hero of {ticket} found for an earlier delivery")
+            return
         self._heroes[ticket] = hero
         self._refresh_tiles()
 
@@ -955,7 +1055,7 @@ class ReviewBoard(QObject):
 
 
 def delivery_images(delivery: ReviewDelivery) -> list[ReviewAttachment]:
-    """A delivery's images in the order it lists them, the first being its hero: by type, or by name without one."""
+    """A delivery's images, by type or by name without one, best first: the first is its hero unless it is reference."""
     return [
         attachment
         for attachment in delivery.attachments
@@ -964,10 +1064,11 @@ def delivery_images(delivery: ReviewDelivery) -> list[ReviewAttachment]:
 
 
 def _hero_basis(item: ReviewItem) -> str:
-    """What a ticket's hero depends on: its delivery, or the source it links to when it has none."""
+    """What a ticket's hero depends on: its delivery and first file, or the source it links to."""
     delivery = item.delivery.comment_id if item.delivery else ""
+    first_file = item.delivery.attachments[0].name if item.delivery and item.delivery.attachments else ""
     source = item.link.source if item.link else ""
-    return f"{delivery}|{source}"
+    return f"{delivery}|{first_file}|{source}"
 
 
 def _thumbnailed(basis: str, image_path: Path, thumbnails: ThumbnailCache) -> _Hero:

@@ -12,6 +12,7 @@ import pytest
 from fake_tracker import (
     ART_QUERY,
     REVIEW_CONFIG,
+    REVIEWER_LOGIN,
     FakeTracker,
     add_review_scenario,
     make_attachment,
@@ -150,6 +151,73 @@ class TestLinks:
 
 
 class TestRefresh:
+    def test_a_project_with_a_review_table_has_a_queue_before_its_first_refresh(self, service: Service) -> None:
+        queue = service.review.queue()
+        assert queue.is_configured
+        assert queue.tracker_name == "YouTrack"
+        assert queue.refreshed_at is None
+
+    def test_a_project_without_one_has_none(self, project_root: Path, tmp_path: Path, tracker: FakeTracker) -> None:
+        project = open_project(project_root, state_dir=tmp_path / "plain-state")
+        assert not Service(project, Catalog(project), tracker).review.queue().is_configured
+
+    def test_a_delivery_is_ordered_and_captioned_by_the_config_and_the_item_says_its_round(
+        self,
+        project: Project,
+        catalog: Catalog,
+        tracker: FakeTracker,
+    ) -> None:
+        config = project.config_path.read_text(encoding="utf-8")
+        images = """
+[review.images]
+hero = ["*_Turnaround.*"]
+reference = ["*_Gate.*"]
+
+[review.images.words]
+negy = "side"
+"""
+        project.config_path.write_text(config + images, encoding="utf-8")
+        gate = make_attachment("8-20", "WAY-61_r2_Coal_Gate.png", b"gate", tracker)
+        side = make_attachment("8-21", "WAY-61_r2_Coal_Compare_negy.png", b"side", tracker)
+        turnaround = make_attachment("8-22", "WAY-61_r2_Coal_Turnaround.png", b"art", tracker)
+        comments = (
+            make_comment("4-20", "2026-10-01T00:00:00+00:00", (gate,)),
+            make_comment("4-21", "2026-10-02T00:00:00+00:00", (gate, side, turnaround)),
+        )
+        tracker.tickets["WAY-61"] = tracker.tickets["WAY-61"].model_copy(update={"comments": comments})
+
+        Service(project, catalog, tracker).review.refresh()
+        reread = Service(project, catalog, tracker)
+        reread.review.refresh()
+        coal = reread.review.item("WAY-61")
+        assert coal.delivery is not None
+        assert [attachment.caption for attachment in coal.delivery.attachments] == [
+            "Turnaround",
+            "Compare side",
+            "Gate",
+        ]
+        assert [attachment.is_reference for attachment in coal.delivery.attachments] == [False, False, True]
+        assert coal.round == 2
+        assert coal.comments[1].captions["WAY-61_r2_Coal_Compare_negy.png"] == "Compare side"
+
+    def test_a_reviewers_first_delivery_counts_as_a_round_and_their_drawings_do_not(
+        self,
+        service: Service,
+        tracker: FakeTracker,
+    ) -> None:
+        first = make_attachment("8-30", "first.png", b"first", tracker)
+        drawing = make_attachment("8-31", "WAY-61-markup-1.png", b"drawing", tracker)
+        second = make_attachment("8-32", "second.png", b"second", tracker)
+        comments = (
+            make_comment("4-30", "2026-10-01T00:00:00+00:00", (first,), author_login=REVIEWER_LOGIN),
+            make_comment("4-31", "2026-10-02T00:00:00+00:00", (drawing,), author_login=REVIEWER_LOGIN),
+            make_comment("4-32", "2026-10-03T00:00:00+00:00", (second,)),
+        )
+        tracker.tickets["WAY-61"] = tracker.tickets["WAY-61"].model_copy(update={"comments": comments})
+
+        service.review.refresh()
+        assert service.review.item("WAY-61").round == 2
+
     def test_a_refresh_lists_every_queue_with_its_latest_delivery(
         self,
         service: Service,

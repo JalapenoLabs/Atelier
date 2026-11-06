@@ -1,5 +1,6 @@
 """The review queue: the tickets waiting for review in a project's tracker, and the decisions written back to it."""
 
+from atelierd.review.images import arrange_attachments, attachment_captions
 from atelierd.review.jobs import DecisionJobs
 from atelierd.review.models import (
     Decision,
@@ -43,4 +44,6 @@ __all__ = [
     "ReviewQueueTab",
     "ReviewService",
     "WrittenDecision",
+    "arrange_attachments",
+    "attachment_captions",
 ]

@@ -102,6 +102,7 @@ def run_gui(options: GuiOptions) -> int:
     launch_options = {
         **options.view_options,
         "project": options.project or "",
+        "isScreenshot": options.screenshot is not None,
         "windowWidth": window_width,
         "windowHeight": window_height,
     }

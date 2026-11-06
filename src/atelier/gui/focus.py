@@ -1,11 +1,11 @@
 """Review focus mode: one ticket at a time, large, decided from the keyboard as fast as the reviewer can think.
 
 `ReviewFocus` follows the review board's focused ticket (`review.py`). For that ticket it shows a **stage**: the latest
-delivery's images (its hero first, then compare sheets, then the rest), the 3D viewport of the source the ticket links
-to, its sounds, and any other files by name, with a filmstrip to switch between them. Beside the stage is the
-ticket's **note**, a `DecisionNote` of its own per ticket, so words written for one ticket stay with it while the
-reviewer moves back and forth; and its **drawings**, PNGs drawn on the stage's images or on a blank canvas
-(`markup.py`'s `DecisionDrawing`).
+delivery's art (its hero first), the 3D viewport of the source the ticket links to, its reference images, its sounds,
+and any other files by name, with a filmstrip to switch between them, under captions rather than file names. Beside
+the stage is the ticket's **note**, a `DecisionNote` of its own per ticket, so words written for one ticket stay with
+it while the reviewer moves back and forth; its **drawings**, PNGs drawn on the stage's images or on a blank canvas
+(`markup.py`'s `DecisionDrawing`); and its **thread**, every comment on the ticket, oldest first (`thread.py`).
 
 Moving on never waits. Approving or finishing with changes submits the decision through the board (which sends it to
 the daemon in the background and badges the ticket) and opens the next ticket without a decision at once. The images
@@ -28,13 +28,16 @@ from collections.abc import Callable
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote
 
 from pydantic import BaseModel, ConfigDict
 from PySide6.QtCore import Property, QObject, QUrl, Signal, Slot
+from PySide6.QtGui import QDesktopServices
 
 from atelier.gui.list_model import RowListModel
 from atelier.gui.markup import DecisionDrawing
 from atelier.gui.review import DecisionNote, ReviewBoard, delivery_images, unsettled_takes_message
+from atelier.gui.thread import STAGE_LINK_SCHEME, date_labels, readable_markdown
 from atelierd.config import ReviewVerdict
 from atelierd.constants import REVIEW_DIR_NAME
 from atelierd.review import DecisionJob, DecisionRequest, ReviewItem, ReviewLink
@@ -52,10 +55,11 @@ PREFETCH_SLOT_COUNT = 24
 
 # A delivery's file is played as a sound when its type or its name says it is one.
 _AUDIO_SUFFIXES = frozenset({".mp3", ".wav", ".ogg", ".oga", ".flac", ".m4a", ".aac", ".opus"})
-# An image whose name says it compares (`compare-front.png`, `Carbine_Compare.png`) comes right after the hero.
-_COMPARE_WORD = "compare"
+# Comment text is untrusted: its links open in the browser only as web pages.
+_WEB_SCHEMES = frozenset({"http", "https"})
 _DRAWING_PREFIX = "drawing-"
 _NO_DELIVERY_ROUND = "no-delivery"
+_MODEL_ENTRY_NAME = "3D view"
 
 
 class StageKind(StrEnum):
@@ -74,8 +78,22 @@ class StageRow(BaseModel):
 
     kind: str
     name: str
+    file_name: str
     url: str
     is_current: bool
+
+
+class ThreadRow(BaseModel):
+    """One comment of the ticket's thread."""
+
+    model_config = ConfigDict(frozen=True)
+
+    author: str
+    date: str
+    full_date: str
+    text: str
+    is_reviewer: bool
+    is_delivery: bool
 
 
 class DrawingRow(BaseModel):
@@ -93,35 +111,35 @@ class _Entry(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     kind: StageKind
+    # What the reviewer sees it called.
     name: str
+    # Its file name, which the tooltip gives and comments' image links go by.
+    file_name: str = ""
     path: Path | None = None
 
 
 def stage_entries(item: ReviewItem) -> list[_Entry]:
-    """What the stage shows for a ticket: its images (hero, compare sheets, the rest), 3D model, sounds and files.
+    """What the stage shows for a ticket: its art, 3D model, reference images, sounds and files.
 
-    The hero is the delivery's first image, as on the grid's tile.
+    The delivery lists its files in display order (`atelierd.review.images`), so the first is the tile's hero too.
     """
     delivery = item.delivery
-    images = delivery_images(delivery) if delivery else []
-    compare_sheets = [image for image in images[1:] if _COMPARE_WORD in image.name.lower()]
-    ordered_images = images[:1] + compare_sheets + [image for image in images[1:] if image not in compare_sheets]
-    entries = [_Entry(kind=StageKind.IMAGE, name=image.name, path=image.path) for image in ordered_images]
-
-    if item.link is not None:
-        model_name = Path(item.link.exports[0]).stem if item.link.exports else Path(item.link.source).stem
-        entries.append(_Entry(kind=StageKind.MODEL, name=f"{model_name} (3D)"))
-
+    art: list[_Entry] = []
+    reference: list[_Entry] = []
     sounds: list[_Entry] = []
     files: list[_Entry] = []
+    images = delivery_images(delivery) if delivery else []
     for attachment in delivery.attachments if delivery else ():
+        name = attachment.caption or attachment.name
         if attachment in images:
-            continue
-        if attachment.mime_type.startswith("audio/") or attachment.path.suffix.lower() in _AUDIO_SUFFIXES:
-            sounds.append(_Entry(kind=StageKind.AUDIO, name=attachment.name, path=attachment.path))
+            entry = _Entry(kind=StageKind.IMAGE, name=name, file_name=attachment.name, path=attachment.path)
+            (reference if attachment.is_reference else art).append(entry)
+        elif attachment.mime_type.startswith("audio/") or attachment.path.suffix.lower() in _AUDIO_SUFFIXES:
+            sounds.append(_Entry(kind=StageKind.AUDIO, name=name, file_name=attachment.name, path=attachment.path))
         else:
-            files.append(_Entry(kind=StageKind.FILE, name=attachment.name, path=attachment.path))
-    return entries + sounds + files
+            files.append(_Entry(kind=StageKind.FILE, name=name, file_name=attachment.name, path=attachment.path))
+    model = [_Entry(kind=StageKind.MODEL, name=_MODEL_ENTRY_NAME)] if item.link is not None else []
+    return art + model + reference + sounds + files
 
 
 class ReviewFocus(QObject):
@@ -133,6 +151,8 @@ class ReviewFocus(QObject):
     stageChanged = Signal()
     # The ticket's drawings changed.
     drawingsChanged = Signal()
+    # Another ticket is shown: the thread goes to this comment, its latest delivery.
+    threadShown = Signal(int)
     # Finishing with changes needs words: the page gives the note's field the keyboard.
     wordsWanted = Signal()
 
@@ -163,6 +183,7 @@ class ReviewFocus(QObject):
         self._notes: dict[str, DecisionNote] = {}
         self._stage_rows = RowListModel(StageRow)
         self._drawing_rows = RowListModel(DrawingRow)
+        self._thread_rows = RowListModel(ThreadRow)
         self._prefetch_slots = [""] * PREFETCH_SLOT_COUNT
 
         board.focusChanged.connect(self._follow_board)
@@ -189,10 +210,6 @@ class ReviewFocus(QObject):
 
     def _get_is_deciding(self) -> bool:
         return bool(self._ticket) and self._board.is_busy(self._ticket)
-
-    def _get_delivery_text(self) -> str:
-        item = self._board.item(self._ticket)
-        return item.delivery.text if item and item.delivery else ""
 
     def _get_stage_rows(self) -> QObject:
         return self._stage_rows
@@ -226,6 +243,9 @@ class ReviewFocus(QObject):
     def _get_drawing_rows(self) -> QObject:
         return self._drawing_rows
 
+    def _get_thread_rows(self) -> QObject:
+        return self._thread_rows
+
     def _get_drawing(self) -> QObject:
         return self.drawing
 
@@ -241,7 +261,6 @@ class ReviewFocus(QObject):
     tile = Property(dict, _get_tile, notify=changed)
     positionLabel = Property(str, _get_position_label, notify=changed)
     isDeciding = Property(bool, _get_is_deciding, notify=changed)
-    deliveryText = Property(str, _get_delivery_text, notify=changed)
     stageRows = Property(QObject, _get_stage_rows, constant=True)
     stageIndex = Property(int, _get_stage_index, notify=stageChanged)
     currentKind = Property(str, _get_current_kind, notify=stageChanged)
@@ -251,6 +270,7 @@ class ReviewFocus(QObject):
     emptyNote = Property(str, _get_empty_note, notify=stageChanged)
     note = Property(QObject, _get_note, notify=changed)
     drawingRows = Property(QObject, _get_drawing_rows, constant=True)
+    threadRows = Property(QObject, _get_thread_rows, constant=True)
     decisionDrawing = Property(QObject, _get_drawing, constant=True)
     # Image URLs to keep decoded ahead, one per slot; a URL that stays wanted keeps its slot.
     prefetchSlots = Property(list, _get_prefetch_slots, notify=stageChanged)
@@ -317,6 +337,27 @@ class ReviewFocus(QObject):
         if not self._entries:
             return
         self.showEntry((self._stage_index + step) % len(self._entries))
+
+    @Slot()
+    def openInTracker(self) -> None:
+        """Open the ticket shown in the tracker, in the default browser."""
+        self._board.openInTracker(self._ticket)
+
+    @Slot(str)
+    def followLink(self, link: str) -> None:
+        """Follow a link in the thread: to the stage for a file of the delivery, or to the browser for a web page."""
+        url = QUrl(link)
+        if url.scheme() == STAGE_LINK_SCHEME:
+            file_name = unquote(url.path())
+            index = next(
+                (position for position, entry in enumerate(self._entries) if entry.file_name == file_name),
+                -1,
+            )
+            self.showEntry(index)
+        elif url.scheme() in _WEB_SCHEMES:
+            QDesktopServices.openUrl(url)
+        else:
+            logger.debug(f"[Focus] Left a {url.scheme()!r} link in a comment unfollowed")
 
     def _step_ticket(self, step: int) -> None:
         tickets = self._board.tab_tickets
@@ -479,6 +520,7 @@ class ReviewFocus(QObject):
             return
         if ticket == self._ticket and _basis(item) == self._basis:
             self.changed.emit()
+            self._refresh_thread(item)
             return
         self._show_ticket(ticket, item)
 
@@ -497,6 +539,10 @@ class ReviewFocus(QObject):
         self._refresh_drawings()
         self.changed.emit()
         self._on_entry_shown()
+        self._refresh_thread(item)
+        rows = self._thread_rows.rows
+        delivery_row = next((row for row in reversed(rows) if isinstance(row, ThreadRow) and row.is_delivery), None)
+        self.threadShown.emit(rows.index(delivery_row) if delivery_row else len(rows) - 1)
 
     def _on_entry_shown(self) -> None:
         entry = self._current_entry()
@@ -508,6 +554,7 @@ class ReviewFocus(QObject):
                 StageRow(
                     kind=entry.kind.value,
                     name=entry.name,
+                    file_name=entry.file_name,
                     url=_file_url(entry.path),
                     is_current=index == self._stage_index,
                 )
@@ -536,6 +583,13 @@ class ReviewFocus(QObject):
         incoming = iter(url for url in wanted if url not in kept)
         self._prefetch_slots = [url or next(incoming, "") for url in kept]
 
+    def _refresh_thread(self, item: ReviewItem | None) -> None:
+        """Bring the thread in line with the ticket's comments; unchanged, it stays as it is, scroll included."""
+        stage_names = frozenset(entry.file_name for entry in self._entries if entry.file_name)
+        rows = _thread_rows(item, stage_names) if item else []
+        if rows != self._thread_rows.rows:
+            self._thread_rows.set_rows(rows)
+
     def _refresh_drawings(self) -> None:
         rows = [DrawingRow(name=path.name, url=_file_url(path)) for path in self.drawing_paths(self._ticket)]
         self._drawing_rows.set_rows(rows)
@@ -561,11 +615,30 @@ class ReviewFocus(QObject):
         return self._notes[ticket]
 
 
+def _thread_rows(item: ReviewItem, stage_names: frozenset[str]) -> list[ThreadRow]:
+    delivery_comment = item.delivery.comment_id if item.delivery else ""
+    rows: list[ThreadRow] = []
+    for comment in item.comments:
+        date, full_date = date_labels(comment.created_at)
+        rows.append(
+            ThreadRow(
+                author=comment.author,
+                date=date,
+                full_date=full_date,
+                text=readable_markdown(comment.text, comment.captions, stage_names, item.url),
+                is_reviewer=comment.is_reviewer,
+                is_delivery=comment.id == delivery_comment,
+            )
+        )
+    return rows
+
+
 def _basis(item: ReviewItem) -> str:
-    """What a ticket's stage is built from: its delivery and the source it links to."""
+    """What a ticket's stage is built from: its delivery, in the order it shows, and the source it links to."""
     delivery = item.delivery.comment_id if item.delivery else ""
+    files = ",".join(attachment.name for attachment in item.delivery.attachments) if item.delivery else ""
     source = item.link.source if item.link else ""
-    return f"{item.ticket}|{delivery}|{source}"
+    return f"{item.ticket}|{delivery}|{files}|{source}"
 
 
 def _drawing_number(path: Path) -> int:

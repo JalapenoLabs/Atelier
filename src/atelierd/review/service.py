@@ -36,6 +36,7 @@ from atelierd.constants import (
     REVIEW_DOWNLOAD_WORKERS,
 )
 from atelierd.project import Project
+from atelierd.review.images import arrange_attachments, attachment_captions
 from atelierd.review.links import find_ticket_links
 from atelierd.review.models import (
     PostedDecision,
@@ -49,7 +50,16 @@ from atelierd.review.models import (
     ReviewQueue,
     ReviewQueueTab,
 )
-from atelierd.trackers import PostedComment, Ticket, TicketAttachment, Tracker, TrackerError, TrackerOpener
+from atelierd.trackers import (
+    TRACKER_NAME_BY_KIND,
+    PostedComment,
+    Ticket,
+    TicketAttachment,
+    TicketComment,
+    Tracker,
+    TrackerError,
+    TrackerOpener,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +67,8 @@ logger = logging.getLogger(__name__)
 TICKET_ID_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_]*-\d+$")
 # Attachment names come from whoever uploaded them: anything that could step outside a folder is replaced.
 _UNSAFE_NAME_PATTERN = re.compile(r"[/\\\x00]")
+# The names decision jobs attach the reviewer's drawings under (`jobs.py`): a comment of those delivers nothing.
+_MARKUP_NAME_PATTERN = re.compile(r"-markup-\d+\.")
 
 
 class DecisionError(TrackerError):
@@ -84,7 +96,8 @@ class ReviewService:
         self._review_dir = project.state_dir / REVIEW_DIR_NAME
         self._refresh_guard = threading.Lock()
         self._state_guard = threading.Lock()
-        self._queue = ReviewQueue(is_configured=False)
+        # A project with a [review] table has a queue from the start, even while its first refresh downloads.
+        self._queue = self._unread_queue()
         # When each ticket was last decided (monotonic), so a refresh that began before a decision leaves it out.
         self._decided_at: dict[str, float] = {}
         self._poll_stop = threading.Event()
@@ -178,6 +191,17 @@ class ReviewService:
             self._report_changes(previous, refreshed)
             return refreshed
 
+    def _unread_queue(self) -> ReviewQueue:
+        """The queue before any refresh: nothing in it yet, but known to be there when the config names one."""
+        try:
+            review_config = load_config(self.project.config_path).review
+        except ConfigError as error:
+            logger.warning(f"[Review] Could not read the config of {self.project.name}: {error}")
+            return ReviewQueue(is_configured=False)
+        if review_config is None:
+            return ReviewQueue(is_configured=False)
+        return ReviewQueue(is_configured=True, tracker_name=TRACKER_NAME_BY_KIND[review_config.tracker.kind])
+
     def _read_queue(self, review_config: ReviewConfig) -> ReviewQueue:
         tracker = self._open_tracker(review_config.tracker)
         reviewer_login = tracker.identity_login()
@@ -193,14 +217,22 @@ class ReviewService:
             tabs.append(ReviewQueueTab(name=queue_name, query=query, tickets=tuple(ticket.id for ticket in listed)))
 
         links = find_ticket_links(self.project.root, review_config.ticket_files, self._catalog.list_sources())
-        deliveries = self._download_deliveries(tracker, list(tickets_by_id.values()), reviewer_login)
+        deliveries = self._download_deliveries(tracker, list(tickets_by_id.values()), reviewer_login, review_config)
         items = tuple(
-            _review_item(ticket, tuple(queues_by_ticket[ticket.id]), reviewer_login, deliveries.get(ticket.id), links)
+            _review_item(
+                ticket,
+                tuple(queues_by_ticket[ticket.id]),
+                reviewer_login,
+                deliveries.get(ticket.id),
+                links,
+                review_config,
+            )
             for ticket in sorted(tickets_by_id.values(), key=lambda ticket: ticket.updated_at)
         )
         logger.info(f"[Review] Read {len(items)} tickets in {len(tabs)} queues for {self.project.name}")
         return ReviewQueue(
             is_configured=True,
+            tracker_name=TRACKER_NAME_BY_KIND[review_config.tracker.kind],
             tabs=tuple(tabs),
             items=items,
             refreshed_at=datetime.now(UTC).isoformat(timespec="seconds"),
@@ -215,6 +247,7 @@ class ReviewService:
         tracker: Tracker,
         tickets: list[Ticket],
         reviewer_login: str,
+        review_config: ReviewConfig,
     ) -> dict[str, ReviewDelivery]:
         """Download each ticket's latest delivery, keeping files already on disk, and drop superseded ones."""
         planned: dict[str, tuple[str, list[tuple[TicketAttachment, Path]]]] = {}
@@ -275,15 +308,19 @@ class ReviewService:
                 author=comment.author_name,
                 created_at=comment.created_at,
                 text=comment.text,
-                attachments=tuple(
-                    ReviewAttachment(
-                        name=destination.name,
-                        path=destination,
-                        mime_type=attachment.mime_type,
-                        size=attachment.size,
-                    )
-                    for attachment, destination in files
-                    if destination.is_file()
+                attachments=arrange_attachments(
+                    ticket.id,
+                    [
+                        ReviewAttachment(
+                            name=destination.name,
+                            path=destination,
+                            mime_type=attachment.mime_type,
+                            size=attachment.size,
+                        )
+                        for attachment, destination in files
+                        if destination.is_file()
+                    ],
+                    review_config.images,
                 ),
                 error="; ".join(errors_by_ticket.get(ticket.id, [])),
             )
@@ -442,6 +479,7 @@ def _review_item(
     reviewer_login: str,
     delivery: ReviewDelivery | None,
     links: dict[str, ReviewLink],
+    review_config: ReviewConfig,
 ) -> ReviewItem:
     return ReviewItem(
         ticket=ticket.id,
@@ -458,13 +496,37 @@ def _review_item(
                 created_at=comment.created_at,
                 text=comment.text,
                 attachment_names=tuple(attachment.name for attachment in comment.attachments),
+                captions=attachment_captions(
+                    ticket.id,
+                    [attachment.name for attachment in comment.attachments],
+                    review_config.images.words,
+                ),
                 is_reviewer=comment.author_login == reviewer_login,
             )
             for comment in ticket.comments
         ),
         delivery=delivery,
+        round=_delivery_round(ticket.comments, delivery),
         link=links.get(ticket.id),
     )
+
+
+def _delivery_round(comments: Sequence[TicketComment], delivery: ReviewDelivery | None) -> int:
+    """Which round the latest delivery is: how many comments up to it deliver files.
+
+    Any author counts, because a first round may have been posted under the reviewer's own identity; only the
+    reviewer's drawings, attached to a decision rather than delivered, do not.
+    """
+    if delivery is None:
+        return 0
+    delivered = 0
+    for comment in comments:
+        names = [attachment.name for attachment in comment.attachments]
+        if names and not all(_MARKUP_NAME_PATTERN.search(name) for name in names):
+            delivered += 1
+        if comment.id == delivery.comment_id:
+            break
+    return delivered
 
 
 def _without_tickets(queue: ReviewQueue, tickets: set[str]) -> ReviewQueue:

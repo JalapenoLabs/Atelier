@@ -10,7 +10,7 @@ Rectangle {
     implicitHeight: 44
     color: Theme.panel
 
-    // "studio" or "review"; the window owns it and remembers it.
+    // "studio" or "review"; the window owns it.
     property string mode: "studio"
     signal modeRequested(string newMode)
 

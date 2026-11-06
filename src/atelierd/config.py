@@ -169,6 +169,28 @@ class VoiceConfig(BaseModel):
         return self
 
 
+class ReviewImagesConfig(BaseModel):
+    """The `[review.images]` table: which of a delivery's files show first, which last, and what each is called.
+
+    Every project names its renders its own way, so all of this is the project's to say: Atelier knows no file name.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    hero: tuple[str, ...] = Field(
+        default=(),
+        description="File name globs of the art itself, best first; the first file to match any is the ticket's hero.",
+    )
+    reference: tuple[str, ...] = Field(
+        default=(),
+        description="File name globs of measuring material, shown after everything else and never as the hero.",
+    )
+    words: dict[str, str] = Field(
+        default_factory=dict,
+        description="What the captions call a word of a file name (`negy` is 'side'), matched regardless of case.",
+    )
+
+
 class ReviewConfig(BaseModel):
     """The `[review]` table: the project's review queue and what each decision does to a ticket."""
 
@@ -205,6 +227,7 @@ class ReviewConfig(BaseModel):
         description="How many decision jobs, each one `claude -p`, run at once.",
     )
     voice: VoiceConfig = Field(default_factory=VoiceConfig)
+    images: ReviewImagesConfig = Field(default_factory=ReviewImagesConfig)
 
     @field_validator("rules", "direction_notes")
     @classmethod

@@ -1,12 +1,14 @@
 // Focus mode: one ticket of the review queue large, decided from the keyboard (gui/focus.py, docs/viewer.md).
 //
-// The stage shows the delivery's images (hero first), the linked source's 3D view, its sounds and its other files,
-// with a filmstrip to switch; a drawing replaces it while one is open. Beside it is the ticket's note: the reviewer's
-// takes (each editable), the field being typed, the drawings the decision carries, and the delivery's own words.
+// The stage shows the delivery's art (hero first; an animation plays), the linked source's 3D view, its reference
+// images, its sounds and its other files, with a filmstrip to switch; a drawing replaces it while one is open. Beside it
+// is the ticket's note, always at the top: the reviewer's takes (each editable), the field being typed and the drawings
+// the decision carries. Under the note is the ticket's whole thread, oldest first, opening on the latest delivery.
 //
 // Keys, while no text field has the keyboard: Left and Right the previous and next ticket, Up and Down the previous and
 // next entry of the filmstrip, A approve, C finish with changes, D draw on the image or the 3D view (D or Enter again
-// keeps the drawing), B a blank canvas, N write in the note, Space play or pause a sound, Esc go back to the grid.
+// keeps the drawing), B a blank canvas, N write in the note, O open the ticket in the tracker, Page Up and Page Down
+// scroll the thread, Space play or pause a sound, Esc go back to the grid.
 // Voice notes' keys (hold ` to talk, R retake, K checkpoint by default) are caught on the window by gui/voice.py, so
 // they work while typing too; this page only tells it that focus mode is on screen.
 // While drawing: P pen, H highlighter, E eraser, 1 to 3 the line size, Ctrl+Z and Ctrl+Shift+Z undo and redo, and
@@ -30,6 +32,10 @@ Rectangle {
     readonly property var drawing: focusMode.decisionDrawing
     readonly property bool isDrawing: drawing.isOpen
     readonly property string stageKind: isDrawing ? "drawing" : focusMode.currentKind
+    // Qt's Image shows only a GIF's first frame, and an animation is what a GIF is delivered to show.
+    readonly property bool isAnimated: focusMode.currentKind === "image"
+                                       && focusMode.currentUrl.toLowerCase().endsWith(".gif")
+    readonly property var stagePicture: isAnimated ? stageAnimation : stageImage
 
     // The stage's pages, by what it shows; anything else is the empty page.
     readonly property var stagePages: ({"image": 0, "model": 1, "audio": 2, "file": 3, "drawing": 4})
@@ -49,6 +55,13 @@ Rectangle {
 
     function writeNote() {
         draftField.forceActiveFocus()
+    }
+
+    // A page of the thread at a time, stopping at its ends.
+    function scrollThread(pages) {
+        const bottom = Math.max(thread.originY, thread.originY + thread.contentHeight - thread.height)
+        const target = thread.contentY + pages * thread.height * 0.9
+        thread.contentY = Math.min(bottom, Math.max(thread.originY, target))
     }
 
     function togglePlayback() {
@@ -71,6 +84,9 @@ Rectangle {
         target: focusPage.focusMode
         function onWordsWanted() {
             focusPage.writeNote()
+        }
+        function onThreadShown(index) {
+            Qt.callLater(() => thread.positionViewAtIndex(index, ListView.Beginning))
         }
     }
 
@@ -102,6 +118,9 @@ Rectangle {
             [Qt.Key_D]: () => focusPage.drawOrKeep(),
             [Qt.Key_B]: () => focusMode.drawOnBlank(),
             [Qt.Key_N]: () => focusPage.writeNote(),
+            [Qt.Key_O]: () => focusMode.openInTracker(),
+            [Qt.Key_PageUp]: () => focusPage.scrollThread(-1),
+            [Qt.Key_PageDown]: () => focusPage.scrollThread(1),
             [Qt.Key_Space]: () => focusPage.togglePlayback(),
             [Qt.Key_Escape]: () => focusMode.close()
         }
@@ -205,6 +224,16 @@ Rectangle {
                     font.pixelSize: Theme.fontSmall
                 }
                 Button {
+                    objectName: "focusOpenInTracker"
+                    text: "Open in " + (studio.reviewBoard.trackerName || "the tracker")
+                    icon.source: Qt.resolvedUrl("icons/external-link.svg")
+                    icon.color: Theme.text
+                    focusPolicy: Qt.NoFocus
+                    onClicked: focusPage.focusMode.openInTracker()
+                    ToolTip.visible: hovered
+                    ToolTip.text: "O"
+                }
+                Button {
                     text: "Approve"
                     focusPolicy: Qt.NoFocus
                     enabled: !focusPage.focusMode.isDeciding
@@ -295,27 +324,39 @@ Rectangle {
                             id: stageImage
                             anchors.fill: parent
                             anchors.margins: Theme.gap
-                            source: focusPage.focusMode.currentKind === "image" ? focusPage.focusMode.currentUrl : ""
+                            visible: !focusPage.isAnimated
+                            source: focusPage.focusMode.currentKind === "image" && !focusPage.isAnimated
+                                    ? focusPage.focusMode.currentUrl : ""
                             fillMode: Image.PreserveAspectFit
                             asynchronous: true
                             mipmap: true
                             smooth: true
                         }
+                        AnimatedImage {
+                            id: stageAnimation
+                            objectName: "focusStageAnimation"
+                            anchors.fill: parent
+                            anchors.margins: Theme.gap
+                            visible: focusPage.isAnimated
+                            source: focusPage.isAnimated ? focusPage.focusMode.currentUrl : ""
+                            fillMode: Image.PreserveAspectFit
+                            asynchronous: true
+                            // Delivered animations are pixel art, which blurs when smoothed.
+                            smooth: false
+                        }
                         BusyIndicator {
                             anchors.centerIn: parent
-                            running: stageImage.status === Image.Loading
+                            running: focusPage.stagePicture.status === Image.Loading
                             visible: running
                         }
                         Label {
                             anchors.centerIn: parent
-                            visible: stageImage.status === Image.Error
+                            visible: focusPage.stagePicture.status === Image.Error
                             text: "Could not show " + focusPage.focusMode.currentName
                             color: Theme.textDim
                         }
                         StageCaption {
                             text: focusPage.focusMode.currentName
-                                  + (stageImage.status === Image.Ready
-                                     ? "   " + stageImage.sourceSize.width + " × " + stageImage.sourceSize.height : "")
                         }
                     }
 
@@ -446,6 +487,7 @@ Rectangle {
                             required property int index
                             required property string kind
                             required property string name
+                            required property string file_name
                             required property string url
                             required property bool is_current
 
@@ -481,26 +523,31 @@ Rectangle {
                                 anchors.right: parent.right
                                 anchors.margins: 4
                                 horizontalAlignment: Text.AlignHCenter
-                                elide: Text.ElideMiddle
+                                elide: Text.ElideRight
                                 text: entry.name
-                                color: Theme.textDim
-                                font.pixelSize: 10
+                                color: entry.is_current ? Theme.selectionText : Theme.textDim
+                                font.pixelSize: Theme.fontSmall
                             }
                             MouseArea {
+                                id: entryMouse
                                 anchors.fill: parent
+                                hoverEnabled: true
                                 onClicked: {
                                     focusPage.focusMode.showEntry(entry.index)
                                     focusPage.forceActiveFocus()
                                 }
                             }
+                            ToolTip.visible: entryMouse.containsMouse && entry.file_name !== ""
+                            ToolTip.text: entry.file_name
                         }
                     }
                 }
             }
 
-            // The note: this ticket's words and drawings, and the delivery's own words.
+            // The note, this ticket's words and drawings, over its thread.
             Rectangle {
-                Layout.preferredWidth: 340
+                id: sidePanel
+                Layout.preferredWidth: 460
                 Layout.fillHeight: true
                 color: Theme.panel
 
@@ -544,13 +591,15 @@ Rectangle {
                         }
                     }
 
+                    // However much is said, the note scrolls within its share of the panel: the thread stays in view.
                     ScrollView {
                         id: notesScroll
                         Layout.fillWidth: true
-                        Layout.fillHeight: true
+                        Layout.preferredHeight: Math.min(notesColumn.implicitHeight, sidePanel.height * 0.4)
                         contentWidth: availableWidth
 
                         ColumnLayout {
+                            id: notesColumn
                             width: notesScroll.availableWidth
                             spacing: 6
 
@@ -675,25 +724,96 @@ Rectangle {
                                     }
                                 }
                             }
+                        }
+                    }
 
-                            Label {
-                                Layout.topMargin: 6
-                                visible: focusPage.focusMode.deliveryText !== ""
-                                text: "The delivery says"
-                                color: Theme.textDim
-                                font.pixelSize: Theme.fontSmall
+                    Rectangle {
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 1
+                        color: Theme.border
+                    }
+
+                    // The ticket's conversation, oldest first.
+                    ListView {
+                        id: thread
+                        objectName: "focusThread"
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        clip: true
+                        spacing: 16
+                        boundsBehavior: Flickable.StopAtBounds
+                        // Comments differ in height, so every one is kept laid out for the scroll to be exact.
+                        cacheBuffer: 100000
+                        model: focusPage.focusMode.threadRows
+
+                        ScrollBar.vertical: ScrollBar {}
+
+                        delegate: Column {
+                            id: comment
+                            required property string author
+                            required property string date
+                            required property string full_date
+                            required property string text
+                            required property bool is_reviewer
+                            required property bool is_delivery
+
+                            width: thread.width - 12
+                            spacing: 4
+
+                            Row {
+                                spacing: 8
+
+                                Label {
+                                    id: commentAuthor
+                                    text: comment.author
+                                    color: comment.is_reviewer ? Theme.accent : Theme.text
+                                    font.bold: true
+                                }
+                                Label {
+                                    anchors.baseline: commentAuthor.baseline
+                                    visible: comment.is_delivery
+                                    text: "Latest delivery"
+                                    color: Theme.accent
+                                    font.pixelSize: Theme.fontSmall
+                                }
+                                Label {
+                                    anchors.baseline: commentAuthor.baseline
+                                    text: comment.date
+                                    color: Theme.textDim
+                                    font.pixelSize: Theme.fontSmall
+                                    ToolTip.visible: dateHover.hovered
+                                    ToolTip.text: comment.full_date
+
+                                    HoverHandler {
+                                        id: dateHover
+                                    }
+                                }
                             }
                             Label {
-                                Layout.fillWidth: true
-                                visible: focusPage.focusMode.deliveryText !== ""
-                                text: focusPage.focusMode.deliveryText
-                                textFormat: Text.PlainText
+                                objectName: "commentText"
+                                width: parent.width
+                                text: comment.text
+                                textFormat: Text.MarkdownText
                                 wrapMode: Text.Wrap
-                                maximumLineCount: 12
-                                elide: Text.ElideRight
-                                color: Theme.textDim
-                                font.pixelSize: Theme.fontSmall
+                                color: Theme.text
+                                linkColor: Theme.accent
+                                font.pixelSize: Theme.fontNormal
+                                onLinkActivated: link => {
+                                    focusPage.focusMode.followLink(link)
+                                    focusPage.forceActiveFocus()
+                                }
+
+                                HoverHandler {
+                                    cursorShape: parent.hoveredLink ? Qt.PointingHandCursor : Qt.ArrowCursor
+                                }
                             }
+                        }
+
+                        Label {
+                            anchors.centerIn: parent
+                            visible: thread.count === 0
+                            text: "No comments yet"
+                            color: Theme.textDim
                         }
                     }
 
@@ -704,7 +824,7 @@ Rectangle {
                         font.pixelSize: Theme.fontSmall
                         text: focusPage.isDrawing
                               ? "P pen · H highlighter · E eraser · 1–3 size · Ctrl+Z undo · Enter or Esc keep"
-                              : "← → ticket · ↑ ↓ image · A approve · C changes · D draw · B blank · N note · Esc grid"
+                              : "← → ticket · ↑ ↓ image · A approve · C changes · D draw · B blank · N note · O open · Esc grid"
                                 + (studio.voiceNotes.isAvailable
                                    ? " · " + studio.voiceNotes.talkKeyLabel + " talk · "
                                      + studio.voiceNotes.retakeKeyLabel + " retake · "

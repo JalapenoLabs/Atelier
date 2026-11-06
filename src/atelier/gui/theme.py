@@ -25,7 +25,7 @@ from typing import Annotated
 from pydantic import BaseModel, ConfigDict, StringConstraints, ValidationError
 from pydantic.alias_generators import to_camel
 from PySide6.QtCore import Property, QFileSystemWatcher, QObject, Qt, QTimer, Signal, Slot
-from PySide6.QtGui import QColor, QGuiApplication
+from PySide6.QtGui import QColor, QGuiApplication, QPalette
 from PySide6.QtQml import QmlElement, QmlSingleton
 
 logger = logging.getLogger(__name__)
@@ -138,6 +138,7 @@ class ThemeFile(QObject):
         self._path = path or default_theme_path()
         self._tokens = ThemeTokens()
         self._colors = self._qml_colors(self._tokens)
+        self._apply_to_application()
 
         self._watcher = QFileSystemWatcher(self)
         self._watcher.fileChanged.connect(self._schedule_reload)
@@ -202,10 +203,18 @@ class ThemeFile(QObject):
             return
         self._tokens = tokens
         self._colors = self._qml_colors(tokens)
-        # Qt derives some colours itself (scroll bars, native dialogs); have it derive them for the right mode.
-        color_scheme = Qt.ColorScheme.Light if tokens.mode == ThemeMode.LIGHT else Qt.ColorScheme.Dark
-        QGuiApplication.styleHints().setColorScheme(color_scheme)
+        self._apply_to_application()
         self.changed.emit()
+
+    def _apply_to_application(self) -> None:
+        """Give Qt's own colours the theme too: the ones it derives, and the links in Markdown text."""
+        # Qt derives some colours itself (scroll bars, native dialogs); have it derive them for the right mode.
+        color_scheme = Qt.ColorScheme.Light if self._tokens.mode == ThemeMode.LIGHT else Qt.ColorScheme.Dark
+        QGuiApplication.styleHints().setColorScheme(color_scheme)
+        # Markdown text colours its links from the application's palette, whatever a Text's `linkColor` says.
+        palette = QGuiApplication.palette()
+        palette.setColor(QPalette.ColorRole.Link, self._colors["accent"])
+        QGuiApplication.setPalette(palette)
 
     @staticmethod
     def _qml_colors(tokens: ThemeTokens) -> dict[str, QColor]:

@@ -1,13 +1,15 @@
 // The Review mode: the project's review queue as a grid of tiles, one per ticket, with a tab per configured queue.
 //
-// Keyboard first: arrows move the cursor (Shift extends the selection), Space selects, Ctrl+A selects the tab, Esc
-// clears, A approves and C requests changes on the selection (or the tile under the cursor), Enter opens it in focus
-// mode, F5 reads the queue from the tracker again. With the mouse: a click selects one tile, Ctrl+click toggles one,
-// Shift+click selects a range, dragging on the grid draws a selection box (with Ctrl, added to the selection), and a
-// double click opens a tile.
+// Keyboard first: arrows move the cursor (Shift extends the selection), Space selects, Ctrl+A selects the tab,
+// Ctrl+Shift+A and Esc clear, Ctrl+Z and Ctrl+Shift+Z undo and redo the selection, A approves and C requests changes on
+// the selection (or the tile under the cursor), Enter opens it in focus mode, O opens it in the tracker, F5 reads the
+// queue from the tracker again. With the mouse: a click selects one tile, Ctrl+click or its checkbox toggles one,
+// Shift+click adds a range, Ctrl+Shift+click takes one away, dragging on the grid draws a selection box (with Ctrl,
+// added to the selection), and a double click opens a tile. While anything is selected, the floating selection bar
+// offers the decisions.
 //
 // The grid itself takes no mouse input (`interactive: false`), so one MouseArea beneath it handles clicks, the box and
-// the wheel, and a tile's own Retry button still gets its clicks. The box selects by the grid's geometry, which also
+// the wheel, and a tile's own checkbox and Retry button still get their clicks. The box selects by the grid's geometry, which also
 // covers tiles scrolled out of view, whose delegates do not exist.
 import QtQuick
 import QtQuick.Controls
@@ -36,7 +38,7 @@ Rectangle {
         anchors.fill: parent
         spacing: 0
 
-        // Tabs per queue, the selection, the decisions and refresh.
+        // Tabs per queue, and refresh.
         Rectangle {
             Layout.fillWidth: true
             implicitHeight: 44
@@ -77,35 +79,26 @@ Rectangle {
                     Layout.fillWidth: true
                 }
 
-                Label {
-                    visible: reviewPage.board.selectedCount > 0
-                    text: reviewPage.board.selectedCount + " selected"
-                    color: Theme.textDim
-                    font.pixelSize: Theme.fontSmall
-                }
-                Button {
-                    text: "Approve"
-                    focusPolicy: Qt.NoFocus
-                    enabled: grid.count > 0
-                    onClicked: decisionPopup.openFor("approve")
-                    ToolTip.visible: hovered
-                    ToolTip.text: "A"
-                }
-                Button {
-                    text: "Request changes"
-                    focusPolicy: Qt.NoFocus
-                    enabled: grid.count > 0
-                    onClicked: decisionPopup.openFor("changes")
-                    ToolTip.visible: hovered
-                    ToolTip.text: "C"
-                }
-                Button {
-                    text: reviewPage.board.isRefreshing ? "Refreshing…" : "Refresh"
+                ToolButton {
+                    objectName: "refreshButton"
+                    display: AbstractButton.IconOnly
+                    icon.source: Qt.resolvedUrl("icons/refresh.svg")
+                    icon.color: Theme.text
                     focusPolicy: Qt.NoFocus
                     enabled: !reviewPage.board.isRefreshing
                     onClicked: reviewPage.board.refresh()
                     ToolTip.visible: hovered
-                    ToolTip.text: "Read the queue from the tracker again (F5)"
+                    ToolTip.text: "Read the queue from " + (reviewPage.board.trackerName || "the tracker") + " again (F5)"
+
+                    // Turns while the tracker is being read.
+                    RotationAnimation on rotation {
+                        running: reviewPage.board.isRefreshing
+                        from: 0
+                        to: 360
+                        duration: 900
+                        loops: Animation.Infinite
+                        alwaysRunToEnd: true
+                    }
                 }
             }
         }
@@ -211,7 +204,8 @@ Rectangle {
                             reviewPage.board.openTicket(index)
                     }
                     onWheel: wheel => {
-                        const bottom = Math.max(grid.originY, grid.originY + grid.contentHeight - grid.height)
+                        const bottom = Math.max(
+                            grid.originY, grid.originY + grid.contentHeight + grid.bottomMargin - grid.height)
                         grid.contentY = Math.min(bottom, Math.max(grid.originY, grid.contentY - wheel.angleDelta.y))
                     }
                 }
@@ -232,6 +226,8 @@ Rectangle {
                     readonly property int columns: Math.max(1, Math.floor(width / 250))
                     cellWidth: Math.floor(width / columns)
                     cellHeight: Math.round(cellWidth * 0.75) + 64
+                    // The last row can always be scrolled clear of the selection bar.
+                    bottomMargin: selectionBar.visible ? selectionBar.height + 2 * Theme.gap : 0
 
                     ScrollBar.vertical: ScrollBar {}
 
@@ -260,12 +256,20 @@ Rectangle {
                             reviewPage.board.moveCursor(keySteps[event.key], isShift)
                         else if (event.key === Qt.Key_Space)
                             reviewPage.board.toggleAtCursor()
+                        else if (event.key === Qt.Key_A && isCtrl && isShift)
+                            reviewPage.board.clearSelection()
                         else if (event.key === Qt.Key_A && isCtrl)
                             reviewPage.board.selectAll()
                         else if (event.key === Qt.Key_A)
                             decisionPopup.openFor("approve")
                         else if (event.key === Qt.Key_C && !isCtrl)
                             decisionPopup.openFor("changes")
+                        else if (event.key === Qt.Key_Z && isCtrl && isShift)
+                            reviewPage.board.redoSelection()
+                        else if (event.key === Qt.Key_Z && isCtrl)
+                            reviewPage.board.undoSelection()
+                        else if (event.key === Qt.Key_O && !isCtrl)
+                            reviewPage.board.openCursorInTracker()
                         else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter)
                             reviewPage.board.openAtCursor()
                         else if (event.key === Qt.Key_Escape)
@@ -282,6 +286,17 @@ Rectangle {
                     visible: gridMouse.isBoxing
                     color: Theme.selectionBox
                     border.color: Theme.accent
+                }
+
+                SelectionBar {
+                    id: selectionBar
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    anchors.bottom: parent.bottom
+                    anchors.bottomMargin: 2 * Theme.gap
+                    visible: reviewPage.board.selectedCount > 0
+                    board: reviewPage.board
+                    tileCount: grid.count
+                    onDecisionRequested: verdict => decisionPopup.openFor(verdict)
                 }
 
                 Label {

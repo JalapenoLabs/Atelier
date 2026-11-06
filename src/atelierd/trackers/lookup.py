@@ -15,6 +15,13 @@ TRACKER_BY_KIND: dict[TrackerKind, Callable[[TrackerConfig], Tracker]] = {
 if set(TRACKER_BY_KIND) != set(TrackerKind):
     raise RuntimeError("Every tracker kind needs its implementation in TRACKER_BY_KIND")
 
+# What the reviewer calls each tracker, for the window's "Open in YouTrack".
+TRACKER_NAME_BY_KIND: dict[TrackerKind, str] = {
+    TrackerKind.YOUTRACK: "YouTrack",
+}
+if set(TRACKER_NAME_BY_KIND) != set(TrackerKind):
+    raise RuntimeError("Every tracker kind needs its name in TRACKER_NAME_BY_KIND")
+
 
 def open_tracker(config: TrackerConfig) -> Tracker:
     """Return the tracker a project's config names, with its credentials read.

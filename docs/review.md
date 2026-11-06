@@ -91,6 +91,40 @@ to_stage = "Backlog"
 
 `rules` and `direction_notes` must stay inside the project. Unknown keys are an error, as everywhere in the file.
 
+### Images
+
+A delivery holds the art and the agent's measuring material side by side, under file names written for tools.
+`[review.images]` says which is which, and what a reviewer calls each one, because only the project knows its own
+names; Atelier knows none. Every key is optional.
+
+```toml
+[review.images]
+hero = ["*_Closeup.*", "*_Day.*", "*_Turnaround.*", "*.gif", "*_BeforeAfter.*", "*_IconSheet.*"]
+reference = ["*_Before.*", "*_ReferenceSheet.*", "*_Compare_*", "*_Gate.*", "*_Scale.*"]
+
+[review.images.words]
+negy = "side"
+posx = "front"
+Gate = "fit check"
+```
+
+| Key         | What it is                                                                                          |
+|-------------|-----------------------------------------------------------------------------------------------------|
+| `hero`      | File name globs of the art itself, best first: the first file to match any is the ticket's hero     |
+| `reference` | File name globs of measuring material (sheets, overlays, the round before): shown last, never the hero |
+| `words`     | What a caption calls a word of a file name, matched regardless of case                              |
+
+Globs match the file name alone, regardless of case. A file matching a `reference` glob is reference even when a
+`hero` glob matches it too. The order the window shows is: files matching `hero`, by the first glob each matches;
+then files matching neither, as uploaded; then reference, by its glob. Files that rank the same keep their upload
+order. Without the table every file keeps its upload order and none is reference.
+
+A **caption** is a file name with what a reviewer has no use for taken out: the extension, the ticket it opens with,
+any round marker (`r2`, `r2fix`), and the words every file of the same comment opens with (each keeps at least one).
+CamelCase is split, `words` translate, and it is in sentence case. So, beside the rest of its delivery,
+`WAY-53_r2_Rifle_Stored_Compare_negy.png` is "Stored compare side". Two files that differ only by a trailing round
+(`CutMarker`, `CutMarker_r2`) keep it, to be told apart.
+
 `[review.voice]` sets up the window's voice notes (see "Voice notes" below). Every key is optional:
 
 ```toml
@@ -121,10 +155,16 @@ the reviewer, on their machine, like the builders a worker runs, so it is as tru
 `runtime.review` (`atelierd.review.ReviewService`) holds each open project's queue.
 
 - **A queue item is a ticket**: its id, summary, stage, tags, link, the queues that list it, its comments (each
-  marked when the reviewer wrote it), its latest delivery, and the source it links to. Items are ordered least
-  recently updated first, in each tab and overall.
+  marked when the reviewer wrote it, with a caption for each attachment), its latest delivery, which round that
+  delivery is, and the source it links to. Items are ordered least recently updated first, in each tab and overall.
+  The queue also names its tracker as the reviewer knows it ("YouTrack"), and a project with a `[review]` table has
+  a queue from the moment it opens, empty until the first refresh.
 - **The latest delivery** is the newest comment with attachments that the reviewer's identity did not write. The
-  reviewer's own comments carry drawings, never deliveries.
+  reviewer's own comments carry drawings, never deliveries. Its attachments come in the order `[review.images]`
+  gives them, each with its caption and marked when it is reference (see "Images" above).
+- **The round** is how many comments, up to and including the latest delivery, carry files other than the reviewer's
+  drawings (`<ticket>-markup-<n>`), whoever posted them: a first round may have gone up under the reviewer's own
+  identity.
 - **Its attachments are downloaded** into `<state>/review/<ticket>/delivery/<comment id>/`, four at a time. They are
   untrusted data: names are made safe (no path separators or leading dots; a repeated name gets the attachment id
   added), and files are only ever shown. A file already there at the right size is not downloaded again. A failed
@@ -249,14 +289,15 @@ comment may or may not have landed, and the error says to check the ticket befor
 ## In the window
 
 The window's **Review** mode (see `viewer.md`) is the reviewer's side of all this: a grid of the queue, one tile per
-ticket with its latest delivery's hero image and its decision job's state, a tab per queue, and multi-select with
-the keyboard and mouse. Approving or requesting changes on the selection is one `review.decide` with every selected
+ticket with its latest delivery's hero image, its round and its decision job's state, a tab per queue, and
+multi-select with the keyboard and mouse, decided from a floating selection bar. Approving or requesting changes on the selection is one `review.decide` with every selected
 ticket and one set of takes; tickets with a decision already on its way are left out of it rather than failing it.
 The grid reads `review.queue` again on every queue event and follows `decision_job` events to badge its tiles, and a
 ticket leaves it on the `decided` event, when its decision has posted. The window never writes to the tracker itself.
 
-Opening a tile goes to **focus mode** on that ticket: its delivery's images, its linked source's 3D view and its
-sounds on a stage, the ticket's own note beside it, and drawings on any image or on a blank canvas. Each decision there
+Opening a tile goes to **focus mode** on that ticket: its delivery's art, its linked source's 3D view, its reference
+images and its sounds on a stage, the ticket's own note beside it over the ticket's whole conversation, and drawings
+on any image or on a blank canvas. Both open the ticket in the tracker with O. Each decision there
 is one `review.decide` for one ticket, with its takes in order (general notes such as "for all the weapons" left in
 the words, for the job to split) and its drawings, and the next ticket opens without waiting for the answer. The
 window keeps what it makes for a ticket's next decision in its **draft folder**,

@@ -1,6 +1,6 @@
-// One ticket in the review grid: its hero image (a thumbnail), id, summary and tags, and its decision job's badge.
-// Selection and clicks belong to the grid (ReviewPage.qml); the tile only draws them, apart from Retry on a failed
-// job, which takes its own taps.
+// One ticket in the review grid: its hero image (a thumbnail), id, summary, tags and delivery round, its checkbox, and
+// its decision job's badge. Selection and clicks belong to the grid (ReviewPage.qml); the tile only draws them, apart
+// from the checkbox and Retry on a failed job, which take their own clicks.
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
@@ -14,6 +14,7 @@ Item {
     required property var tags
     required property string thumbnail_url
     required property string hero_note
+    required property string round_label
     required property string job_state
     required property string job_label
     required property string job_error
@@ -66,6 +67,29 @@ Item {
                     text: tile.hero_note
                     color: Theme.textDim
                     font.pixelSize: Theme.fontSmall
+                }
+
+                // Top left, as the first thing on the row. The click is taken here rather than by the box, which would
+                // not say which modifiers were held, and the box only shows what the board says.
+                CheckBox {
+                    objectName: "tileCheckbox"
+                    anchors.top: parent.top
+                    anchors.left: parent.left
+                    anchors.margins: 4
+                    padding: 2
+                    checked: tile.is_selected
+                    focusPolicy: Qt.NoFocus
+                    background: Rectangle {
+                        radius: 4
+                        color: tile.is_selected ? Theme.accent : Theme.overlay
+                        border.color: Theme.textDim
+                    }
+
+                    MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: mouse => studio.reviewBoard.checkTile(tile.index, mouse.modifiers)
+                    }
                 }
 
                 // The decision job's state, top right; a failed one can be retried and says why on hover.
@@ -136,30 +160,41 @@ Item {
                 }
             }
 
-            Flow {
+            RowLayout {
                 Layout.fillWidth: true
-                Layout.preferredHeight: tagLabelMetrics.height + 4
-                spacing: 4
-                clip: true
+                spacing: 6
 
-                Repeater {
-                    model: tile.tags
+                Flow {
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: tagLabelMetrics.height + 4
+                    spacing: 4
+                    clip: true
 
-                    delegate: Rectangle {
-                        required property string modelData
-                        width: tagLabel.implicitWidth + 10
-                        height: tagLabel.implicitHeight + 4
-                        radius: 3
-                        color: Theme.field
+                    Repeater {
+                        model: tile.tags
 
-                        Label {
-                            id: tagLabel
-                            anchors.centerIn: parent
-                            text: parent.modelData
-                            color: Theme.textDim
-                            font.pixelSize: Theme.fontSmall
+                        delegate: Rectangle {
+                            required property string modelData
+                            width: tagLabel.implicitWidth + 10
+                            height: tagLabel.implicitHeight + 4
+                            radius: 3
+                            color: Theme.field
+
+                            Label {
+                                id: tagLabel
+                                anchors.centerIn: parent
+                                text: parent.modelData
+                                color: Theme.textDim
+                                font.pixelSize: Theme.fontSmall
+                            }
                         }
                     }
+                }
+                Label {
+                    visible: text !== ""
+                    text: tile.round_label
+                    color: tile.is_selected ? Theme.selectionText : Theme.textDim
+                    font.pixelSize: Theme.fontSmall
                 }
             }
         }
